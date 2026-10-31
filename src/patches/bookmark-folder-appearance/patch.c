@@ -11,7 +11,10 @@ static int Find(const Image *img, Edit *edits) {
     const char *missing = ResolveBindings(&lookup, &bindings);
     LookupFree(&lookup);
     if (missing) return Refuse("didn't find %s", missing);
-    printf("  row vtable %#lx, paint slot %d, bounds +%#lx\n", bindings.rowVtable, bindings.paintBackgroundSlot, bindings.boundsOffset);
+    printf("  row vtable %#lx, paint slot %d, bounds +%#lx, icons %#lx (create %#lx, set %#lx, destroy %#lx)\n", bindings.rowVtable,
+           bindings.paintBackgroundSlot, bindings.boundsOffset, bindings.updateIcons, bindings.createImage, bindings.setImage, bindings.destroyImage);
+    printf("  leading +%#lx, caret +%#lx, title +%#lx, selected +%#lx, title color slot %#lx id %#lx, %d folder icons\n", bindings.leadingOffset,
+           bindings.caretOffset, bindings.titleOffset, bindings.selectedOffset, bindings.setTitleColorOffset, bindings.titleColorId, bindings.iconCount);
     return RUNS_IN_ASIDE;
 }
 

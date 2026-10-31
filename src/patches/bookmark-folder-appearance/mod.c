@@ -1,4 +1,4 @@
-// Colors bookmark folders. Aside's classes and methods are bound by name in resolve.c, and
+// Colors bookmark folders and changes their icons. Aside's classes and methods are bound by name in resolve.c, and
 // the shape of its objects is learned here from the first row that paints.
 
 #include "mod/mod.h"
@@ -14,10 +14,13 @@
 #define CORNER_RADIUS 8.0f
 #define TICK_MS 16
 #define SCAN_LIMIT 0x700
+#define ICON_SIZE 16
+#define MAX_ICONS 64
+#define NEUTRAL_ICON_COLOR 0xB0B3B8
 
 typedef struct {
     char guid[GUID_SIZE];
-    int color;
+    int color, icon;  // -1 when unset.
 } Folder;
 
 typedef struct {
@@ -30,6 +33,11 @@ typedef void (*CreateRounded)(void **result, ULONGLONG color, float radius, int 
 typedef void (*SchedulePaint)(void *view);
 typedef void (*Paint)(void *self, void *canvas, void *view);
 typedef void (*PaintBackground)(void *view, void *canvas);
+typedef void (*CreateImage)(void *result, const void *icon, ULONGLONG color, int size, void *badge);
+typedef void (*SetImage)(void *view, const void *image);
+typedef void (*DestroyImage)(void *image);
+typedef void (*UpdateIcons)(void *row);
+typedef void (*SetTitleColor)(void *label, ULONGLONG color);
 
 static Bindings Native;
 static BYTE *Base;
@@ -38,6 +46,7 @@ static PaintBackground OriginalRowPaint, OriginalContainerPaint;
 
 // Learned from live objects.
 static DWORD ParentOffset, ChildrenOffset, NodeOffset, GuidOffset, NodeParentOffset;
+static DWORD ImageIconOffset, ImageColorOffset;
 static BOOL Learned;
 static int LearnAttempts;
 
@@ -50,9 +59,20 @@ static int ContainerCount;
 static BYTE *LastPaintedContainer;
 static void *Rounded;
 
+static const IconEntry *Icons;
+static const wchar_t *IconNames[MAX_ICONS];
+static size_t IconNameSizes[MAX_ICONS];
+
 static const DWORD FolderColors[COLOR_COUNT] = {
     0xDADCE0, 0x8AB4F8, 0xF28B82, 0xFDD663, 0x81C995, 0xFF8BCB, 0xC58AF9, 0x78D9EC,
 };
+
+static int FindIcon(const char *key) {
+    size_t size = strcspn(key, "\t\r\n");
+    for (int i = 0; i < Native.iconCount; i++)
+        if (Icons[i].keySize == size && !memcmp(Icons[i].key, key, size)) return i;
+    return -1;
+}
 
 static void LoadFolders(void) {
     if (!ExpandEnvironmentStringsA("%LOCALAPPDATA%\\AsideLate\\folders.tsv", StorePath, MAX_PATH)) return;
@@ -62,9 +82,11 @@ static void LoadFolders(void) {
     while (FolderCount < MAX_FOLDERS && fgets(line, sizeof line, file)) {
         int color;
         if (strlen(line) < GUID_SIZE + 2 || line[GUID_SIZE] != '\t' || sscanf(line + GUID_SIZE + 1, "%d", &color) != 1) continue;
-        if (color < 0 || color >= COLOR_COUNT) continue;
+        if (color < -1 || color >= COLOR_COUNT) continue;
+        const char *key = strchr(line + GUID_SIZE + 1, '\t');
         memcpy(Folders[FolderCount].guid, line, GUID_SIZE);
-        Folders[FolderCount++].color = color;
+        Folders[FolderCount].color = color;
+        Folders[FolderCount++].icon = key ? FindIcon(key + 1) : -1;
     }
     fclose(file);
 }
@@ -72,27 +94,39 @@ static void LoadFolders(void) {
 static void SaveFolders(void) {
     FILE *file = fopen(StorePath, "w");
     if (!file) return;
-    for (int i = 0; i < FolderCount; i++) fprintf(file, "%.36s\t%d\n", Folders[i].guid, Folders[i].color);
+    for (int i = 0; i < FolderCount; i++) {
+        const Folder *folder = &Folders[i];
+        fprintf(file, "%.36s\t%d\t", folder->guid, folder->color);
+        if (folder->icon >= 0) fwrite(Icons[folder->icon].key, 1, Icons[folder->icon].keySize, file);
+        fputc('\n', file);
+    }
     fclose(file);
 }
 
-static int FindColor(const char *guid) {
+static const Folder *FindFolder(const char *guid) {
     for (int i = 0; i < FolderCount; i++)
-        if (!memcmp(Folders[i].guid, guid, GUID_SIZE)) return Folders[i].color;
-    return -1;
+        if (!memcmp(Folders[i].guid, guid, GUID_SIZE)) return &Folders[i];
+    return NULL;
 }
 
-static void SetColor(const char *guid, int color) {
-    for (int i = 0; i < FolderCount; i++) {
-        if (memcmp(Folders[i].guid, guid, GUID_SIZE)) continue;
-        if (color < 0) Folders[i] = Folders[--FolderCount];
-        else Folders[i].color = color;
-        SaveFolders();
-        return;
+static int FindColor(const char *guid) {
+    const Folder *folder = FindFolder(guid);
+    return folder ? folder->color : -1;
+}
+
+static void SetFolder(const char *guid, int color, int icon) {
+    Folder *folder = (Folder *)FindFolder(guid);
+    if (color < 0 && icon < 0) {
+        if (folder) *folder = Folders[--FolderCount];
+    } else {
+        if (!folder) {
+            if (FolderCount == MAX_FOLDERS) return;
+            folder = &Folders[FolderCount++];
+            memcpy(folder->guid, guid, GUID_SIZE);
+        }
+        folder->color = color;
+        folder->icon = icon;
     }
-    if (color < 0 || FolderCount == MAX_FOLDERS) return;
-    memcpy(Folders[FolderCount].guid, guid, GUID_SIZE);
-    Folders[FolderCount++].color = color;
     SaveFolders();
 }
 
@@ -251,6 +285,84 @@ static void Repaint(void *view) {
     ((SchedulePaint)(Base + Native.schedulePaint))(view);
 }
 
+static void SetImageView(void *view, const void *icon, ULONGLONG color) {
+    BYTE image[64] = {0};
+    ((CreateImage)(Base + Native.createImage))(image, icon, color, ICON_SIZE, NULL);
+    ((SetImage)(Base + Native.setImage))(view, image);
+    ((DestroyImage)(Base + Native.destroyImage))(image);
+}
+
+// An image view keeps the icon and color it was given. Finding those values straight after
+// setting them shows where they live, so later paints can tell if anything changed them.
+static void LearnImageShape(const BYTE *view, const void *icon, ULONGLONG color) {
+    for (DWORD offset = 0x100; offset < 0x800; offset += 8) {
+        const void *value;
+        if (!SafeRead(view + offset, &value, sizeof value) || value != icon) continue;
+        for (DWORD other = offset + 4; other < offset + 0x40; other += 4) {
+            ULONGLONG candidate;
+            if (!SafeRead(view + other, &candidate, sizeof candidate) || candidate != color) continue;
+            ImageIconOffset = offset;
+            ImageColorOffset = other;
+            ModLog("learned: image icon +%#lx, color +%#lx", offset, other);
+            return;
+        }
+    }
+    ModLog("couldn't learn the image view's shape");
+}
+
+static BOOL ImageIsCurrent(const BYTE *view, const void *icon, ULONGLONG color) {
+    return *(const void *const *)(view + ImageIconOffset) == icon && *(const ULONGLONG *)(view + ImageColorOffset) == color;
+}
+
+static void SetRowTitleColor(const BYTE *row, ULONGLONG color) {
+    void *title = *(void *const *)(row + Native.titleOffset);
+    if (!title) return;
+    void **vtable = *(void ***)title;
+    ((SetTitleColor)vtable[Native.setTitleColorOffset / 8])(title, color);
+}
+
+// Skia colors are tagged in the top half of a ColorVariant. Native color IDs aren't.
+static ULONGLONG SkiaColor(DWORD rgb) {
+    return (1ull << 32) | 0xFF000000u | rgb;
+}
+
+// Runs on every paint, so it only touches what's out of date. Setting an image repaints.
+static void StyleRow(BYTE *row) {
+    BYTE *node = NodeOf(row);
+    const Folder *folder = node ? FindFolder(GuidOf(node)) : NULL;
+    if (!folder) return;
+    ULONGLONG color = SkiaColor(folder->color >= 0 ? FolderColors[folder->color] : NEUTRAL_ICON_COLOR);
+    const void *glyph = folder->icon >= 0 ? Icons[folder->icon].icon : Base + Native.folderIcon;
+    const void *caretGlyph = Base + Native.caretIcon;
+    BYTE *leading = *(BYTE **)(row + Native.leadingOffset), *caret = *(BYTE **)(row + Native.caretOffset);
+    if (!leading) return;
+    if (ImageIconOffset && ImageIsCurrent(leading, glyph, color) && (!caret || ImageIsCurrent(caret, caretGlyph, color))) return;
+    SetImageView(leading, glyph, color);
+    if (!ImageIconOffset) LearnImageShape(leading, glyph, color);
+    if (caret) SetImageView(caret, caretGlyph, color);
+    if (folder->color >= 0) SetRowTitleColor(row, color);
+}
+
+// Back to exactly what Aside would draw, using its own function and its own color.
+static void RestoreRow(BYTE *row) {
+    ((UpdateIcons)(Base + Native.updateIcons))(row);
+    SetRowTitleColor(row, Native.titleColorId + (row[Native.selectedOffset] ? 3 : 0));
+}
+
+static void RefreshRows(const char *guid) {
+    for (int i = 0; i < ContainerCount; i++) {
+        size_t count;
+        void **children = ChildrenOf(Containers[i].view, &count);
+        for (size_t j = 0; j < count; j++) {
+            BYTE *row = children[j];
+            if (!IsRow(row) || !NodeOf(row) || memcmp(GuidOf(NodeOf(row)), guid, GUID_SIZE)) continue;
+            RestoreRow(row);
+            StyleRow(row);
+        }
+        Repaint(Containers[i].view);
+    }
+}
+
 static void PaintBlock(BYTE *container, void *canvas, const RECT *rect, int inset, int color, BOOL expanded) {
     RECT area;
     BoundsOf(container, &area);
@@ -381,13 +493,23 @@ static BOOL FindRowAt(HWND window, POINT client, BYTE **foundRow, BYTE **foundCo
     return FALSE;
 }
 
-static BYTE *FlyoutContainer;
 static char FlyoutGuid[GUID_SIZE];
 
-static void OnColorPicked(int color) {
-    SetColor(FlyoutGuid, color);
-    ModLog("folder %.36s color %d", FlyoutGuid, color);
-    for (int i = 0; i < ContainerCount; i++) Repaint(Containers[i].view);
+static void PickColor(int color) {
+    const Folder *folder = FindFolder(FlyoutGuid);
+    SetFolder(FlyoutGuid, color, folder ? folder->icon : -1);
+    RefreshRows(FlyoutGuid);
+}
+
+static void PickIcon(int icon) {
+    const Folder *folder = FindFolder(FlyoutGuid);
+    SetFolder(FlyoutGuid, folder ? folder->color : -1, icon);
+    RefreshRows(FlyoutGuid);
+}
+
+static void ResetFolder(void) {
+    SetFolder(FlyoutGuid, -1, -1);
+    RefreshRows(FlyoutGuid);
 }
 
 static void OnRightClick(const MSG *message) {
@@ -396,18 +518,29 @@ static void OnRightClick(const MSG *message) {
     BYTE *row, *container;
     if (!FindRowAt(message->hwnd, client, &row, &container)) return;
     BYTE *node = NodeOf(row);
-    ModLog("right click on row %p: folder %d", row, node && IsFolder(node));
     if (!node || !IsFolder(node)) return;
     memcpy(FlyoutGuid, GuidOf(node), GUID_SIZE);
-    FlyoutContainer = container;
     POINT screen = client;
     ClientToScreen(message->hwnd, &screen);
-    FlyoutShow(message->hwnd, screen, FolderColors, FindColor(FlyoutGuid), OnColorPicked);
+    const Folder *folder = FindFolder(FlyoutGuid);
+    FlyoutChoices choices = {
+        .colors = FolderColors,
+        .iconNames = IconNames,
+        .iconNameSizes = IconNameSizes,
+        .iconCount = min(Native.iconCount, MAX_ICONS),
+        .color = folder ? folder->color : -1,
+        .icon = folder ? folder->icon : -1,
+        .pickColor = PickColor,
+        .pickIcon = PickIcon,
+        .reset = ResetFolder,
+    };
+    FlyoutShow(message->hwnd, screen, &choices);
 }
 
 static LRESULT CALLBACK OnMessage(int code, WPARAM removed, LPARAM param) {
     if (code >= 0 && removed == PM_REMOVE) {
         const MSG *message = (const MSG *)param;
+        if (message->message == WM_RBUTTONDOWN) FlyoutBeforeMenu();
         if (message->message == WM_RBUTTONUP) OnRightClick(message);
     }
     return CallNextHookEx(NULL, code, removed, param);
@@ -421,8 +554,9 @@ static void StartOnUiThread(void) {
 }
 
 static void RowPaint(void *view, void *canvas) {
-    OriginalRowPaint(view, canvas);
     BYTE *row = view;
+    if (Learned) StyleRow(row);
+    OriginalRowPaint(view, canvas);
     if (!Learned) {
         if (LearnAttempts >= 64) return;
         LearnAttempts++;
@@ -450,6 +584,11 @@ static void Start(const Lookup *lookup, BYTE *base) {
     }
     Base = base;
     RowVtable = base + Native.rowVtable;
+    Icons = (const IconEntry *)(base + Native.iconTable);
+    for (int i = 0; i < Native.iconCount && i < MAX_ICONS; i++) {
+        IconNames[i] = Icons[i].label;
+        IconNameSizes[i] = Icons[i].labelSize;
+    }
     LoadFolders();
     if (!SwapVtableEntry(RowVtable, Native.paintBackgroundSlot, RowPaint, (void **)&OriginalRowPaint)) {
         ModLog("couldn't hook the row");

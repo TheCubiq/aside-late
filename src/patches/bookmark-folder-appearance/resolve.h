@@ -10,7 +10,28 @@ typedef struct {
     DWORD roundedBackground;   // views::CreateRoundedRectBackground.
     DWORD schedulePaint;       // View::SchedulePaint.
     DWORD boundsOffset;        // View::bounds_, read out of SchedulePaint.
+
+    DWORD updateIcons;         // The row's own function that sets its icons.
+    DWORD folderIcon, caretIcon;
+    DWORD createImage, setImage, destroyImage;
+    DWORD leadingOffset, caretOffset;  // The row's two image views.
+
+    DWORD titleOffset, selectedOffset;
+    DWORD setTitleColorOffset; // Label::SetEnabledColor in a Label's vtable.
+    DWORD titleColorId;        // The native color of an unselected title.
+
+    DWORD iconTable;           // Aside's table of folder icons.
+    int iconCount;
 } Bindings;
+
+// One entry of the icon table.
+typedef struct {
+    const char *key;
+    size_t keySize;
+    const void *icon;
+    const wchar_t *label;
+    size_t labelSize;
+} IconEntry;
 
 // Returns NULL, or the name of the rule that didn't match.
 const char *ResolveBindings(const Lookup *lookup, Bindings *bindings);
