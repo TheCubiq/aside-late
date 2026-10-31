@@ -1,0 +1,6 @@
+{
+  "id": "chats",
+  "title": "Hide Chats",
+  "description": "Hide the Chats sidebar section.",
+  "tested": ["1.0.928.2", "1.0.1022.1"]
+}

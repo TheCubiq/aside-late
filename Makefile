@@ -1,7 +1,14 @@
-aside-late.exe: main.c
-	gcc -O2 -Wall -Wextra -municode -static -o $@ $<
+CFLAGS := -O2 -Wall -Wextra -municode -static -Isrc
+SOURCES := $(wildcard src/*.c src/patches/*/patch.c)
+DEPENDS := $(wildcard src/*.h src/patches/*/patch.json)
+
+build/aside-late.exe: $(SOURCES) $(DEPENDS) | build
+	gcc $(CFLAGS) -o $@ $(SOURCES)
+
+build:
+	mkdir build
 
 clean:
-	rm -f aside-late.exe
+	git clean -fdX build
 
 .PHONY: clean
