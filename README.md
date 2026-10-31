@@ -92,10 +92,10 @@ Patches that need to run code inside Aside add `mod.c`, built into
 
 ### bookmark-folder-appearance
 
-Right-click a bookmark folder for a small panel beside Aside's own menu, with colors, icons
-and a reset. A colored folder and its open contents get a rounded tint, and its icon and
-title take the color. Choices are kept by folder GUID in
-`%LOCALAPPDATA%\AsideLate\folders.tsv`. Aside's menu stays untouched.
+Right-click a bookmark folder for a menu built like Aside's tab group menu: its colors, its
+icon picker, a reset, and the folder's own Rename, Delete and Manage Bookmarks. A colored
+folder and its open contents get a rounded tint, and its icon and title take the color.
+Choices are kept by folder GUID in `%LOCALAPPDATA%\AsideLateolders.tsv`.
 
 Nothing is stored per build:
 
@@ -105,8 +105,13 @@ Nothing is stored per build:
 - **Method slots** come from trace strings. `View::OnPaintBackground`'s slot is voted on
   across every vtable that uses it.
 - **Icons** name themselves. `kAsideBookmarkFolderIcon` leads to the row's icon function,
-  and that function's calls are the image create, set and destroy functions. The picker's
-  names come from Aside's own icon table, found by its shape.
+  and that function's calls are the image create, set and destroy functions.
+- **The right click** is the row method that tests for the right button. The label
+  `Manage Bookmarks` finds what Aside would have run, and that shows how it sets up a
+  folder's commands, so the menu's items end in Aside's own handlers.
+- **The menu's parts** are read out of the function building the tab group menu, found by
+  `TabGroupColorButton`. It can't be called for a folder because it needs a real tab group,
+  but it shows each control's size, vtables and constructor, and how a popup is made.
 - **Object layouts** are learned from the first row that paints, by shape: a parent lists
   the row among its children, a node holds a GUID and is listed by its parent, and an image
   view holds the icon and color it was just given.
