@@ -553,11 +553,12 @@ PATCH_START() {
     Base = base;
     RowVtable = base + Native.rowVtable;
     Icons = (const IconEntry *)(base + Native.iconTable);
-    LoadFolders();
     return NULL;
 }
 
 PATCH_ENABLE() {
+    // The icon table holds pointers, and they only mean something in the loaded DLL.
+    if (!StorePath[0]) LoadFolders();
     if (!HookVtable(RowVtable, Native.paintBackgroundSlot, RowPaint, (void **)&OriginalRowPaint)) {
         ModLog("couldn't hook the row");
         return;
