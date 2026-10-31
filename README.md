@@ -28,6 +28,9 @@ and opens nothing. Terminating is a force-quit, so Aside may offer to restore yo
 
 Anything else goes to Aside, such as `--user-data-dir=<path>`.
 
+Patches can also be switched on and off under **Patched stuff** in Aside's settings. Changes
+apply the next time you start Aside with `aside-late.exe`.
+
 To undo everything, quit the patched Aside and start it normally. Closing its windows may
 not be enough, because Aside can keep running in the background:
 
@@ -90,12 +93,31 @@ Patches that need to run code inside Aside add `mod.c`, built into
    `mov dl,1; SetVisible` call and loads Aside's extension ID.
 2. Require exactly one such function. Both calls now pass false.
 
+### settings
+
+Adds **Patched stuff** to Aside's settings: Mods, with a switch for each patch, and About.
+Aside's settings are an extension page whose files its browser process reads, so:
+
+1. Watch `Aside.dll`'s imports of `CreateFileW`, `GetFileAttributes*` and
+   `GetFinalPathNameByHandleW`, and only act on paths inside the `AsideAgentManager`
+   extension. Aside asks an open file where it really is, so a redirected file answers with
+   the path it was opened as.
+2. Serve `main.html` from a copy with one extra `<script>` tag. The copy is made from
+   whatever that version of the extension ships.
+3. Serve `/aside-late/` from `%LOCALAPPDATA%\AsideLate\web`. It doesn't exist on disk, and
+   asking for `/aside-late/set/<id>/<0 or 1>/...` updates `disabled.txt`, which the launcher
+   reads before it patches anything.
+4. The script draws into the live page, copying a native navigation item and reusing the
+   page's CSS classes. It uses none of the page's code, so it needs no per-build names.
+
+This patch can't be switched off from its own page. `--without settings` leaves it out.
+
 ### bookmark-folder-appearance
 
 Right-click a bookmark folder for a menu built like Aside's tab group menu: its colors, its
 icon picker, a reset, and the folder's own Rename, Delete and Manage Bookmarks. A colored
 folder and its open contents get a rounded tint, and its icon and title take the color.
-Choices are kept by folder GUID in `%LOCALAPPDATA%\AsideLateolders.tsv`.
+Choices are kept by folder GUID in `%LOCALAPPDATA%\AsideLate\folders.tsv`.
 
 Nothing is stored per build:
 
