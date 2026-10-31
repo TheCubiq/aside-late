@@ -1,3 +1,7 @@
+# The recipes use cmd's commands, whichever shell make was started from.
+SHELL := cmd.exe
+.SHELLFLAGS := /c
+
 BUILD ?= build
 CFLAGS := -O2 -Wall -Wextra -static -Isrc/sdk -D_WIN32_WINNT=0x0A00
 PATCHES := $(notdir $(wildcard patches/*))
@@ -6,7 +10,7 @@ SDK_HEADERS := $(wildcard src/sdk/*.h)
 all: $(BUILD)/aside-late.exe $(BUILD)/aside-late-mod.dll $(addprefix $(BUILD)/sdk/,$(notdir $(SDK_HEADERS))) $(PATCHES:%=$(BUILD)/patches/%/patch.dll)
 
 $(BUILD)/aside-late.exe: $(wildcard src/launcher/*) | $(BUILD)
-	gcc $(CFLAGS) -municode -o $@ $(wildcard src/launcher/*.c)
+	gcc $(CFLAGS) -municode -o $@ $(wildcard src/launcher/*.c) -lole32 -luuid
 
 $(BUILD)/aside-late-mod.dll: $(wildcard src/mod/*) $(SDK_HEADERS) | $(BUILD)
 	gcc $(CFLAGS) -DASIDE_LATE_MOD -Isrc/mod -shared -o $@ $(wildcard src/mod/*.c) -lwinhttp

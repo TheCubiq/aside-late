@@ -3,6 +3,9 @@
 
 #include "launcher.h"
 
+#include <objbase.h>
+#include <shlobj.h>
+
 // Everything aside-late keeps lives here. A trial can point it somewhere else.
 static void PrepareHome(wchar_t *home) {
     if (!GetEnvironmentVariableW(L"ASIDE_LATE_HOME", home, MAX_PATH)) {
@@ -13,6 +16,38 @@ static void PrepareHome(wchar_t *home) {
     swprintf(web, MAX_PATH, L"%ls\\web", home);
     CreateDirectoryW(home, NULL);
     CreateDirectoryW(web, NULL);
+}
+
+// A shortcut to this program, so starting Aside the usual way can mean starting it with the patches.
+static int MakeShortcut(const wchar_t *requested) {
+    wchar_t path[MAX_PATH], self[MAX_PATH];
+    if (requested) {
+        wcsncpy(path, requested, MAX_PATH - 1);
+        path[MAX_PATH - 1] = 0;
+    } else {
+        ExpandEnvironmentStringsW(L"%USERPROFILE%\\Desktop\\Aside (patched).lnk", path, MAX_PATH);
+    }
+    GetModuleFileNameW(NULL, self, MAX_PATH);
+    wchar_t icon[MAX_PATH];
+    ExpandEnvironmentStringsW(L"%ProgramFiles%\\Aside\\Application\\Aside.exe", icon, MAX_PATH);
+
+    IShellLinkW *link = NULL;
+    IPersistFile *file = NULL;
+    CoInitialize(NULL);
+    HRESULT result = CoCreateInstance(&CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, &IID_IShellLinkW, (void **)&link);
+    if (SUCCEEDED(result)) {
+        link->lpVtbl->SetPath(link, self);
+        link->lpVtbl->SetIconLocation(link, icon, 0);
+        link->lpVtbl->SetDescription(link, L"Aside with aside-late's patches");
+        result = link->lpVtbl->QueryInterface(link, &IID_IPersistFile, (void **)&file);
+    }
+    if (SUCCEEDED(result)) result = file->lpVtbl->Save(file, path, TRUE);
+    if (file) file->lpVtbl->Release(file);
+    if (link) link->lpVtbl->Release(link);
+    CoUninitialize();
+    if (FAILED(result)) return printf("couldn't make the shortcut (error %#lx)\n", result), 1;
+    printf("made %ls\n", path);
+    return 0;
 }
 
 static void FindUserDataDir(int first, int argc, wchar_t **argv, wchar_t *out) {
@@ -48,6 +83,8 @@ int wmain(int argc, wchar_t **argv) {
             typedef int (*ListPatches)(const wchar_t *);
             ListPatches list = (ListPatches)(void *)ModFunction("ModListPatches");
             return list ? list(home) : (printf("couldn't load aside-late-mod.dll\n"), 1);
+        } else if (!wcscmp(argv[first], L"--shortcut")) {
+            return MakeShortcut(first + 1 < argc ? argv[first + 1] : NULL);
         } else if (!wcscmp(argv[first], L"--without") && first + 1 < argc) {
             wcsncat(skipped, argv[first + 1], 1022 - wcslen(skipped));
             wcscat(skipped, L",");
