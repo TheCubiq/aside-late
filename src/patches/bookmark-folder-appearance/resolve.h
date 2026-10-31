@@ -2,6 +2,8 @@
 
 #include "mod/lookup.h"
 
+#define GROUP_COLOR_COUNT 10
+
 // Everything this patch binds to in Aside, found by name or shape on every launch.
 typedef struct {
     DWORD rowVtable;           // VerticalBookmarkRowView's primary vtable.
@@ -56,6 +58,12 @@ typedef struct {
     DWORD popupSize, popupConstruct, popupDestruct, popupSetContents;
     DWORD widgetCreate, widgetPrepare, widgetShow, widgetClose;
     DWORD pickerSize, pickerConstruct;
+
+    // Theme colors. A group color's background ID follows its icon and title IDs.
+    DWORD groupBackgrounds[GROUP_COLOR_COUNT];  // 0 where a group color doesn't exist.
+    DWORD groupForeground;     // What the neutral group color uses for its icon and title.
+    DWORD getColor;            // ColorProvider::GetColor.
+    DWORD widgetThemeOffset, themeProviderOffset;  // How a widget gives its ColorProvider.
 
     // By name, each falling back to the folder icon.
     DWORD changeIconIcon, resetIcon, renameIcon, deleteIcon, manageIcon;

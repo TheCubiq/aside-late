@@ -16,8 +16,9 @@
 #define TICK_MS 16
 #define SCAN_LIMIT 0x700
 #define ICON_SIZE 16
-#define NEUTRAL_ICON_COLOR 0xB0B3B8
-#define COLOR_COUNT 9
+#define COLLAPSED_ALPHA 0x1a000000u
+#define EXPANDED_ALPHA 0x33000000u
+#define NEUTRAL_COLOR 0
 #define BUTTON_MASK 0xf800
 #define RIGHT_BUTTON 0x2000
 
@@ -43,6 +44,9 @@ typedef void (*UpdateIcons)(void *row);
 typedef void (*SetTitleColor)(void *label, ULONGLONG color);
 typedef BOOL (*MousePressed)(void *row, const void *event);
 typedef void (*ConvertToScreen)(const void *view, POINT *point);
+typedef void *(*GetWidget)(void *view);
+typedef void *(*GetColorProvider)(void *theme);
+typedef DWORD (*GetColor)(void *provider, DWORD id);
 
 static Bindings Native;
 static BYTE *Base;
@@ -65,10 +69,19 @@ static int ContainerCount;
 static void *Rounded;
 
 static const IconEntry *Icons;
-// Indexed by Aside's own color IDs, which is what's stored and what the menu's buttons use.
-static const DWORD FolderColors[COLOR_COUNT] = {
-    0xDADCE0, 0x8AB4F8, 0xF28B82, 0xFDD663, 0x81C995, 0xFF8BCB, 0xC58AF9, 0x78D9EC, 0xFCAD70,
-};
+// Folders store Aside's group colors, the same values its menu's buttons use.
+static BOOL IsGroupColor(int color) {
+    return color >= 0 && color < GROUP_COLOR_COUNT && Native.groupBackgrounds[color];
+}
+
+// Icon, title and background IDs sit together for each color. The neutral one has its own.
+static ULONGLONG IconColor(int color) {
+    return color == NEUTRAL_COLOR ? Native.groupForeground : Native.groupBackgrounds[color] - 2;
+}
+
+static ULONGLONG TitleColor(int color) {
+    return color == NEUTRAL_COLOR ? Native.groupForeground : Native.groupBackgrounds[color] - 1;
+}
 
 static int FindIcon(const char *key) {
     size_t size = strcspn(key, "\t\r\n");
@@ -85,7 +98,7 @@ static void LoadFolders(void) {
     while (FolderCount < MAX_FOLDERS && fgets(line, sizeof line, file)) {
         int color;
         if (strlen(line) < GUID_SIZE + 2 || line[GUID_SIZE] != '\t' || sscanf(line + GUID_SIZE + 1, "%d", &color) != 1) continue;
-        if (color < -1 || color >= COLOR_COUNT) continue;
+        if (color != -1 && !IsGroupColor(color)) continue;
         const char *key = strchr(line + GUID_SIZE + 1, '\t');
         memcpy(Folders[FolderCount].guid, line, GUID_SIZE);
         Folders[FolderCount].color = color;
@@ -300,17 +313,13 @@ static void SetRowTitleColor(const BYTE *row, ULONGLONG color) {
     ((SetTitleColor)vtable[Native.setTitleColorOffset / 8])(title, color);
 }
 
-// Skia colors are tagged in the top half of a ColorVariant. Native color IDs aren't.
-static ULONGLONG SkiaColor(DWORD rgb) {
-    return (1ull << 32) | 0xFF000000u | rgb;
-}
-
 // Runs on every paint, so it only touches what's out of date. Setting an image repaints.
 static void StyleRow(BYTE *row) {
     BYTE *node = NodeOf(row);
     const Folder *folder = node ? FindFolder(GuidOf(node)) : NULL;
     if (!folder) return;
-    ULONGLONG color = SkiaColor(folder->color >= 0 ? FolderColors[folder->color] : NEUTRAL_ICON_COLOR);
+    // Icons are themed like Aside's own until the folder has a color.
+    ULONGLONG color = folder->color >= 0 ? IconColor(folder->color) : Native.themedColorId - row[Native.selectedOffset];
     const void *glyph = folder->icon >= 0 ? Icons[folder->icon].icon : Base + Native.folderIcon;
     const void *caretGlyph = Base + Native.caretIcon;
     BYTE *leading = *(BYTE **)(row + Native.leadingOffset), *caret = *(BYTE **)(row + Native.caretOffset);
@@ -319,7 +328,7 @@ static void StyleRow(BYTE *row) {
     SetImageView(leading, glyph, color);
     if (!ImageIconOffset) LearnImageShape(leading, glyph, color);
     if (caret) SetImageView(caret, caretGlyph, color);
-    if (folder->color >= 0) SetRowTitleColor(row, color);
+    if (folder->color >= 0) SetRowTitleColor(row, TitleColor(folder->color));
 }
 
 // Back to exactly what Aside would draw, using its own function and its own color.
@@ -342,7 +351,23 @@ static void RefreshRows(const char *guid) {
     }
 }
 
+// A background resolves an ID the same way, but a tint needs its own alpha on top.
+static BOOL ResolveTint(BYTE *view, int color, BOOL expanded, DWORD *argb) {
+    void **vtable = *(void ***)view;
+    BYTE *widget = ((GetWidget)vtable[Native.widgetMethodOffset / 8])(view);
+    if (!widget) return FALSE;
+    void *theme = widget + Native.widgetThemeOffset;
+    void **themeVtable = *(void ***)theme;
+    void *provider = ((GetColorProvider)themeVtable[Native.themeProviderOffset / 8])(theme);
+    if (!provider) return FALSE;
+    DWORD resolved = ((GetColor)(Base + Native.getColor))(provider, Native.groupBackgrounds[color]);
+    *argb = (resolved & 0xffffff) | (expanded ? EXPANDED_ALPHA : COLLAPSED_ALPHA);
+    return TRUE;
+}
+
 static void PaintBlock(BYTE *container, void *canvas, const RECT *rect, int inset, int color, BOOL expanded) {
+    DWORD argb;
+    if (!ResolveTint(container, color, expanded, &argb)) return;
     RECT area;
     BoundsOf(container, &area);
     int *insets = (int *)((BYTE *)Rounded + 0x20);
@@ -350,7 +375,6 @@ static void PaintBlock(BYTE *container, void *canvas, const RECT *rect, int inse
     insets[1] = rect->left + inset;
     insets[2] = (area.bottom - area.top) - rect->bottom;
     insets[3] = (area.right - area.left) - rect->right + (inset ? 6 : 0);
-    ULONGLONG argb = (expanded ? 0x33000000u : 0x1a000000u) | FolderColors[color];
     *(ULONGLONG *)((BYTE *)Rounded + 8) = (1ull << 32) | argb;
     void **vtable = *(void ***)Rounded;
     ((Paint)vtable[Native.backgroundPaintOffset / 8])(Rounded, canvas, container);
@@ -371,7 +395,8 @@ static void PaintFolders(BYTE *container, void *canvas) {
         if (!IsRow(row) || !IsVisible(row) || !NodeOf(row)) continue;
         BYTE *node = NodeOf(row);
         int color = FindColor(GuidOf(node));
-        if (color < 0) continue;
+        // Like Aside's neutral groups, which have no fill of their own.
+        if (color < 0 || color == NEUTRAL_COLOR) continue;
         RECT block;
         BoundsOf(row, &block);
         if (block.bottom <= block.top) continue;

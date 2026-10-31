@@ -576,6 +576,70 @@ static const char *ResolvePicker(const Lookup *lookup, const RUNTIME_FUNCTION *s
     return bindings->widgetClose ? NULL : "Widget::Close";
 }
 
+// A switch from a group color to its background's color ID:
+// cmp ecx,9; ja; mov eax,ecx; lea r8,[table]; movsxd rax,[r8+rax*4]; add rax,r8; jmp rax
+// where each case is mov eax,<id>; ret.
+static const char *ResolveGroupColors(const Lookup *lookup, Bindings *bindings) {
+    DWORD start = lookup->text->VirtualAddress, end = start + lookup->text->Misc.VirtualSize - 32;
+    BOOL found = FALSE;
+    for (DWORD rva = start; rva < end; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (memcmp(p, "\x83\xf9\x09\x77", 4) || memcmp(p + 5, "\x89\xc8\x4c\x8d\x05", 5)) continue;
+        DWORD table = rva + 7 + 7 + *(const INT32 *)(p + 10);
+        if (!LookupRva(lookup, table)) continue;
+        DWORD ids[GROUP_COLOR_COUNT] = {0}, highest = 0;
+        int count = 0;
+        for (int i = 0; i < GROUP_COLOR_COUNT; i++) {
+            DWORD target = table + *(const INT32 *)(lookup->base + table + i * 4);
+            if (target < start || target >= end) continue;
+            const BYTE *q = lookup->base + target;
+            if (q[0] != 0xb8 || q[5] != 0xc3) continue;
+            ids[i] = *(const DWORD *)(q + 1);
+            highest = max(highest, ids[i]);
+            count++;
+        }
+        if (count < 8) continue;
+        if (found) return "the group colors (more than one match)";
+        found = TRUE;
+        memcpy(bindings->groupBackgrounds, ids, sizeof ids);
+        bindings->groupForeground = highest + 1;
+    }
+    return found ? NULL : "the group colors";
+}
+
+// In Background::Paint, for a color that's an ID:
+// mov rax,[rcx+theme]; add rcx,theme; mov rax,[rax+provider]; ...; mov edx,edi; call GetColor
+static BOOL ReadColorProvider(const Lookup *lookup, DWORD paint, Bindings *bindings) {
+    const RUNTIME_FUNCTION *fn = LookupFunction(lookup, paint);
+    if (!fn || fn->BeginAddress != paint) return FALSE;
+    DWORD at = FindBytes(lookup, paint, fn->EndAddress, "\x48\x8b\x41", 3);
+    for (; at; at = FindBytes(lookup, at + 1, fn->EndAddress, "\x48\x8b\x41", 3)) {
+        const BYTE *p = lookup->base + at;
+        if (memcmp(p + 4, "\x48\x83\xc1", 3) || p[7] != p[3] || memcmp(p + 8, "\x48\x8b\x40", 3)) continue;
+        DWORD call = FindBytes(lookup, at, fn->EndAddress, "\x89\xfa\xe8", 3);
+        if (!call) return FALSE;
+        bindings->widgetThemeOffset = p[3];
+        bindings->themeProviderOffset = p[11];
+        bindings->getColor = CallTarget(call + 2, lookup->base + call + 2);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static const char *ResolveColorProvider(const Lookup *lookup, Bindings *bindings) {
+    const RUNTIME_FUNCTION *fn = LookupFunction(lookup, bindings->roundedBackground);
+    if (!fn) return "the color provider";
+    for (DWORD rva = fn->BeginAddress; rva + 7 <= fn->EndAddress; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if ((p[0] != 0x48 && p[0] != 0x4c) || p[1] != 0x8d || (p[2] & 0xc7) != 0x05) continue;
+        DWORD vtable = rva + 7 + *(const INT32 *)(p + 3);
+        if (vtable < lookup->rdata->VirtualAddress || vtable >= lookup->rdata->VirtualAddress + lookup->rdata->Misc.VirtualSize) continue;
+        DWORD paint = LookupPointerRva(lookup, lookup->base + vtable + bindings->backgroundPaintOffset);
+        if (paint && ReadColorProvider(lookup, paint, bindings)) return NULL;
+    }
+    return "the color provider";
+}
+
 static DWORD IconOr(const Lookup *lookup, const char *name, DWORD fallback) {
     DWORD icon = FindVectorIcon(lookup, name);
     return icon ? icon : fallback;
@@ -598,6 +662,8 @@ static const char *ResolveMenu(const Lookup *lookup, Bindings *bindings) {
     if ((missing = ResolveItems(lookup, show, bindings))) return missing;
     if ((missing = ResolveColorButton(lookup, show, bindings))) return missing;
     if ((missing = ResolvePicker(lookup, show, bindings))) return missing;
+    if ((missing = ResolveGroupColors(lookup, bindings))) return missing;
+    if ((missing = ResolveColorProvider(lookup, bindings))) return missing;
     bindings->changeIconIcon = IconOr(lookup, "kAsideEmojiAddReactionStrokeIcon", bindings->folderIcon);
     bindings->resetIcon = IconOr(lookup, "kAsideReloadChromeRefreshIcon", bindings->folderIcon);
     bindings->renameIcon = IconOr(lookup, "kAsideEditChromeRefreshIcon", bindings->folderIcon);

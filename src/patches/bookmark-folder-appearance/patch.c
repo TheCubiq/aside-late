@@ -31,6 +31,9 @@ static int Find(const Image *img, Edit *edits) {
     printf("\n  item %#lx size %#lx, themed %#lx; popup %#lx size %#lx, destruct %#lx, contents %#lx; widget %#lx, prepare %#lx, show %#lx, close %#lx; picker %#lx size %#lx\n", bindings.itemConstruct,
            bindings.itemSize, bindings.themedColorId, bindings.popupConstruct, bindings.popupSize, bindings.popupDestruct, bindings.popupSetContents, bindings.widgetCreate, bindings.widgetPrepare,
            bindings.widgetShow, bindings.widgetClose, bindings.pickerConstruct, bindings.pickerSize);
+    printf("  group backgrounds");
+    for (int i = 0; i < GROUP_COLOR_COUNT; i++) printf(" %#lx", bindings.groupBackgrounds[i]);
+    printf(", foreground %#lx; get color %#lx, theme +%#lx, provider +%#lx\n", bindings.groupForeground, bindings.getColor, bindings.widgetThemeOffset, bindings.themeProviderOffset);
     return RUNS_IN_ASIDE;
 }
 
