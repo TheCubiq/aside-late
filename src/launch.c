@@ -16,16 +16,40 @@ static BOOL ApplyEdits(HANDLE process, BYTE *base, const Edit *edits, int count)
     return TRUE;
 }
 
+// LoadLibrary in a new thread. It can't take the loader lock until Aside.dll has finished
+// loading, and Aside can't load anything further until the mod has finished starting.
+static BOOL LoadMod(HANDLE process) {
+    wchar_t path[MAX_PATH];
+    DWORD len = GetModuleFileNameW(NULL, path, MAX_PATH);
+    wchar_t *slash = wcsrchr(path, L'\\');
+    if (!len || len >= MAX_PATH || !slash) return FALSE;
+    wcscpy(slash + 1, L"aside-late-mod.dll");
+    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) return FALSE;
+
+    SIZE_T size = (wcslen(path) + 1) * sizeof *path;
+    void *remote = VirtualAllocEx(process, NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!remote || !WriteProcessMemory(process, remote, path, size, NULL)) return FALSE;
+    FARPROC load = GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW");
+    HANDLE thread = CreateRemoteThread(process, NULL, 0, (LPTHREAD_START_ROUTINE)(void *)load, remote, 0, NULL);
+    if (!thread) return FALSE;
+    CloseHandle(thread);
+    return TRUE;
+}
+
 // One patch refusing doesn't stop the others. Returns how many patches landed.
 static int PatchLoadedDll(HANDLE process, HANDLE file, BYTE *base, int *wanted) {
     ULONGLONG start = GetTickCount64();
     Image img = {0};
-    int applied = 0;
+    int applied = 0, inAside = 0;
     *wanted = 0;
     if (LoadImageFile(file, &img)) {
         for (int i = 0; i < PatchCount; i++) {
             if (Patches[i].skipped) continue;
             ++*wanted;
+            if (Patches[i].inAside) {
+                inAside++;
+                continue;
+            }
             Edit edits[MAX_EDITS];
             int count = FindAndPrintEdits(&Patches[i], &img, edits);
             if (!count) continue;
@@ -36,6 +60,14 @@ static int PatchLoadedDll(HANDLE process, HANDLE file, BYTE *base, int *wanted) 
         printf("couldn't read Aside.dll\n");
     }
     FreeImageFile(&img);
+    if (inAside) {
+        if (LoadMod(process)) {
+            applied += inAside;
+            printf("%d patch%s running inside Aside. Its log is %%LOCALAPPDATA%%\\AsideLate\\mod.log\n", inAside, inAside == 1 ? "" : "es");
+        } else {
+            printf("couldn't load aside-late-mod.dll\n");
+        }
+    }
     printf("patched %d of %d in %llu ms\n", applied, *wanted, GetTickCount64() - start);
     return applied;
 }
@@ -93,6 +125,13 @@ int Launch(const wchar_t *exe, wchar_t *commandLine) {
     PROCESS_INFORMATION pi;
     // A process started under a debugger otherwise keeps the slow debug heap after detaching.
     SetEnvironmentVariableW(L"_NO_DEBUG_HEAP", L"1");
+    char skipped[1024] = "";
+    for (int i = 0; i < PatchCount; i++) {
+        if (!Patches[i].skipped) continue;
+        strncat(skipped, Patches[i].id, sizeof skipped - strlen(skipped) - 2);
+        strcat(skipped, ",");
+    }
+    SetEnvironmentVariableA("ASIDE_LATE_SKIP", skipped);
     if (!CreateProcessW(exe, commandLine, NULL, NULL, FALSE, DEBUG_ONLY_THIS_PROCESS, NULL, NULL, &si, &pi)) {
         printf("couldn't start %ls (error %lu)\n", exe, GetLastError());
         return 1;

@@ -25,26 +25,30 @@ typedef struct {
 } Edit;
 
 // Finds this patch's code in a build. Returns how many edits it wrote, or Refuse(...).
+// A patch that runs inside Aside returns RUNS_IN_ASIDE if the build has what it needs.
 typedef int (*FindEdits)(const Image *img, Edit *edits);
+#define RUNS_IN_ASIDE (-1)
 
 typedef struct {
     const char *id, *title, *description;
     FindEdits find;
-    BOOL skipped;
+    BOOL inAside, skipped;
 } Patch;
 
 extern Patch Patches[];
 extern int PatchCount;
-void RegisterPatch(const char *manifest, FindEdits find);
+void RegisterPatch(const char *manifest, FindEdits find, BOOL inAside);
 
 // Declares a patch from its folder under src/patches, embedding that folder's patch.json.
-#define PATCH(folder, find)                                                                                     \
+#define DECLARE_PATCH(folder, find, inAside)                                                                    \
     __asm__(".section .rdata,\"dr\"\n.Lmanifest:\n.incbin \"src/patches/" folder "/patch.json\"\n.byte 0\n.text"); \
     __attribute__((constructor)) static void RegisterThisPatch(void) {                                          \
         const char *manifest;                                                                                   \
         __asm__("leaq .Lmanifest(%%rip), %0" : "=r"(manifest));                                                 \
-        RegisterPatch(manifest, find);                                                                          \
+        RegisterPatch(manifest, find, inAside);                                                                 \
     }
+#define PATCH(folder, find) DECLARE_PATCH(folder, find, FALSE)
+#define PATCH_IN_ASIDE(folder, find) DECLARE_PATCH(folder, find, TRUE)
 
 int Refuse(const char *format, ...);
 

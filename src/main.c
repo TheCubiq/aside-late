@@ -24,13 +24,14 @@ static const char *ManifestField(const char *manifest, const char *key) {
     return value;
 }
 
-void RegisterPatch(const char *manifest, FindEdits find) {
+void RegisterPatch(const char *manifest, FindEdits find, BOOL inAside) {
     if (PatchCount == MAX_PATCHES) exit(1);
     Patches[PatchCount++] = (Patch){
         .id = ManifestField(manifest, "id"),
         .title = ManifestField(manifest, "title"),
         .description = ManifestField(manifest, "description"),
         .find = find,
+        .inAside = inAside,
     };
 }
 
@@ -44,7 +45,7 @@ static int Scan(const wchar_t *path) {
     for (int i = 0; !failed && i < PatchCount; i++) {
         if (Patches[i].skipped) continue;
         Edit edits[MAX_EDITS];
-        if (!FindAndPrintEdits(&Patches[i], &img, edits)) failed = 1;
+        if (!FindAndPrintEdits(&Patches[i], &img, edits)) failed = 1;  // RUNS_IN_ASIDE is fine.
     }
     FreeImageFile(&img);
     return failed;
@@ -76,7 +77,7 @@ int wmain(int argc, wchar_t **argv) {
     int first = 1;
     while (first < argc) {
         if (!wcscmp(argv[first], L"--list")) {
-            for (int i = 0; i < PatchCount; i++) printf("%-12s %s\n", Patches[i].id, Patches[i].description);
+            for (int i = 0; i < PatchCount; i++) printf("%-28s %s\n", Patches[i].id, Patches[i].description);
             return 0;
         } else if (!wcscmp(argv[first], L"--without") && first + 1 < argc) {
             if (!Skip(argv[first + 1])) return 1;
