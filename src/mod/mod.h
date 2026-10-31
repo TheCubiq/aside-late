@@ -13,5 +13,7 @@ void ModLog(const char *format, ...);
 
 // Replaces one method on every object of a class, like swizzling.
 BOOL SwapVtableEntry(void **vtable, int slot, void *replacement, void **original);
+// Replaces what one module calls when it uses a function it imports. Others are unaffected.
+BOOL HookImport(BYTE *module, const char *dll, const char *name, void *replacement, void **original);
 // Reads memory that might not be valid. Used only while learning an object's shape.
 BOOL SafeRead(const void *from, void *to, size_t size);

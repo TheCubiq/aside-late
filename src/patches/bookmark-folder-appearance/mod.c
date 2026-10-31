@@ -91,7 +91,7 @@ static int FindIcon(const char *key) {
 }
 
 static void LoadFolders(void) {
-    if (!ExpandEnvironmentStringsA("%LOCALAPPDATA%\\AsideLate\\folders.tsv", StorePath, MAX_PATH)) return;
+    if (!ExpandEnvironmentStringsA("%ASIDE_LATE_HOME%\\folders.tsv", StorePath, MAX_PATH)) return;
     FILE *file = fopen(StorePath, "r");
     if (!file) return;
     char line[128];

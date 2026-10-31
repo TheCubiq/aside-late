@@ -61,6 +61,50 @@ static BOOL Skip(const wchar_t *id) {
     return FALSE;
 }
 
+// Everything aside-late keeps lives here. A trial can point it somewhere else.
+static void PrepareHome(wchar_t *home) {
+    if (!GetEnvironmentVariableW(L"ASIDE_LATE_HOME", home, MAX_PATH)) {
+        ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\AsideLate", home, MAX_PATH);
+        SetEnvironmentVariableW(L"ASIDE_LATE_HOME", home);
+    }
+    wchar_t web[MAX_PATH];
+    swprintf(web, MAX_PATH, L"%ls\\web", home);
+    CreateDirectoryW(home, NULL);
+    CreateDirectoryW(web, NULL);
+}
+
+// Patches switched off in Aside's settings.
+static void SkipDisabled(const wchar_t *home) {
+    wchar_t path[MAX_PATH];
+    swprintf(path, MAX_PATH, L"%ls\\disabled.txt", home);
+    FILE *file = _wfopen(path, L"r");
+    if (!file) return;
+    char line[64];
+    while (fgets(line, sizeof line, file)) {
+        line[strcspn(line, "\r\n")] = 0;
+        for (int i = 0; i < PatchCount; i++)
+            if (!strcmp(Patches[i].id, line) && strcmp(line, "settings")) Patches[i].skipped = TRUE;
+    }
+    fclose(file);
+}
+
+// For the settings page. Manifests hold plain text, so nothing here needs escaping.
+static void SavePatchList(const wchar_t *home) {
+    wchar_t path[MAX_PATH];
+    swprintf(path, MAX_PATH, L"%ls\\web\\patches.json", home);
+    FILE *file = _wfopen(path, L"w");
+    if (!file) {
+        printf("couldn't save the patch list for the settings page\n");
+        return;
+    }
+    fputs("{\"patches\":[", file);
+    for (int i = 0; i < PatchCount; i++)
+        fprintf(file, "%s{\"id\":\"%s\",\"title\":\"%s\",\"description\":\"%s\",\"running\":%s}", i ? "," : "", Patches[i].id, Patches[i].title,
+                Patches[i].description, Patches[i].skipped ? "false" : "true");
+    fputs("]}\n", file);
+    fclose(file);
+}
+
 static void FindUserDataDir(int first, int argc, wchar_t **argv, wchar_t *out) {
     static const wchar_t option[] = L"--user-data-dir=";
     size_t optionSize = wcslen(option);
@@ -73,6 +117,9 @@ int wmain(int argc, wchar_t **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     wchar_t exe[MAX_PATH];
     ExpandEnvironmentStringsW(L"%ProgramFiles%\\Aside\\Application\\Aside.exe", exe, MAX_PATH);
+    wchar_t home[MAX_PATH];
+    PrepareHome(home);
+    SkipDisabled(home);
 
     int first = 1;
     while (first < argc) {
@@ -98,6 +145,7 @@ int wmain(int argc, wchar_t **argv) {
     wchar_t userDataDir[MAX_PATH];
     FindUserDataDir(first, argc, argv, userDataDir);
     if (!ReadyToLaunch(userDataDir)) return 1;
+    SavePatchList(home);
 
     size_t size = wcslen(exe) + 3;
     for (int i = first; i < argc; i++) size += wcslen(argv[i]) + 3;

@@ -39,6 +39,30 @@ BOOL SwapVtableEntry(void **vtable, int slot, void *replacement, void **original
     return TRUE;
 }
 
+BOOL HookImport(BYTE *module, const char *dll, const char *name, void *replacement, void **original) {
+    const IMAGE_NT_HEADERS64 *nt = (const void *)(module + ((const IMAGE_DOS_HEADER *)module)->e_lfanew);
+    const IMAGE_DATA_DIRECTORY *directory = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (!directory->VirtualAddress) return FALSE;
+    const IMAGE_IMPORT_DESCRIPTOR *import = (const void *)(module + directory->VirtualAddress);
+    for (; import->Name; import++) {
+        if (_stricmp((const char *)module + import->Name, dll) || !import->OriginalFirstThunk) continue;
+        const IMAGE_THUNK_DATA64 *names = (const void *)(module + import->OriginalFirstThunk);
+        IMAGE_THUNK_DATA64 *slots = (void *)(module + import->FirstThunk);
+        for (size_t i = 0; names[i].u1.AddressOfData; i++) {
+            if (IMAGE_SNAP_BY_ORDINAL64(names[i].u1.Ordinal)) continue;
+            const IMAGE_IMPORT_BY_NAME *entry = (const void *)(module + names[i].u1.AddressOfData);
+            if (strcmp((const char *)entry->Name, name)) continue;
+            DWORD protect;
+            if (!VirtualProtect(&slots[i], sizeof slots[i], PAGE_READWRITE, &protect)) return FALSE;
+            *original = (void *)slots[i].u1.Function;
+            slots[i].u1.Function = (ULONGLONG)replacement;
+            VirtualProtect(&slots[i], sizeof slots[i], protect, &protect);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 BOOL SafeRead(const void *from, void *to, size_t size) {
     SIZE_T got;
     return ReadProcessMemory(GetCurrentProcess(), from, to, size, &got) && got == size;
@@ -46,8 +70,7 @@ BOOL SafeRead(const void *from, void *to, size_t size) {
 
 static void OpenLog(void) {
     char path[MAX_PATH];
-    if (!ExpandEnvironmentStringsA("%LOCALAPPDATA%\\AsideLate", path, MAX_PATH)) return;
-    CreateDirectoryA(path, NULL);
+    if (!GetEnvironmentVariableA("ASIDE_LATE_HOME", path, MAX_PATH)) return;
     strncat(path, "\\mod.log", MAX_PATH - strlen(path) - 1);
     Log = fopen(path, "w");
 }

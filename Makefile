@@ -2,7 +2,7 @@ CFLAGS := -O2 -Wall -Wextra -static -Isrc -D_WIN32_WINNT=0x0A00
 SHARED := src/mod/lookup.c $(wildcard src/patches/*/resolve.c)
 SOURCES := $(wildcard src/*.c src/patches/*/patch.c) $(SHARED)
 MOD_SOURCES := $(wildcard src/mod/*.c src/patches/*/mod.c src/patches/*/menu.c $(wildcard src/patches/*/resolve.c))
-DEPENDS := $(wildcard src/*.h src/mod/*.h src/patches/*/*.h src/patches/*/patch.json)
+DEPENDS := $(wildcard src/*.h src/mod/*.h src/patches/*/*.h src/patches/*/patch.json src/patches/*/*.js)
 
 all: build/aside-late.exe build/aside-late-mod.dll
 
