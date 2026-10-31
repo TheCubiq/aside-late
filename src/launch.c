@@ -46,6 +46,47 @@ static BOOL IsAsideDll(HANDLE file) {
     return len >= 10 && len < MAX_PATH * 2 && !_wcsicmp(path + len - 10, L"\\Aside.dll");
 }
 
+// Every Chromium app uses this window class, and its title is the profile that app owns.
+static DWORD FindRunningAside(const wchar_t *userDataDir) {
+    HWND window = NULL;
+    while ((window = FindWindowExW(HWND_MESSAGE, window, L"Chrome_MessageWindow", NULL))) {
+        wchar_t title[MAX_PATH];
+        if (!GetWindowTextW(window, title, MAX_PATH) || _wcsicmp(title, userDataDir)) continue;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(window, &pid);
+        return pid;
+    }
+    return 0;
+}
+
+static BOOL CALLBACK CountOpenWindow(HWND window, LPARAM param) {
+    DWORD *counts = (DWORD *)param, pid = 0;
+    wchar_t name[32];
+    GetWindowThreadProcessId(window, &pid);
+    if (pid == counts[0] && IsWindowVisible(window) && GetClassNameW(window, name, 32) && !wcscmp(name, L"Chrome_WidgetWin_1")) counts[1]++;
+    return TRUE;
+}
+
+BOOL ReadyToLaunch(const wchar_t *userDataDir) {
+    DWORD pid = FindRunningAside(userDataDir);
+    if (!pid) return TRUE;
+
+    DWORD counts[2] = {pid, 0};
+    EnumWindows(CountOpenWindow, (LPARAM)counts);
+    printf("Aside is already running with %lu window%s open. Terminate it so the patches can apply? [y/N] ", counts[1], counts[1] == 1 ? "" : "s");
+    char answer[16];
+    if (!fgets(answer, sizeof answer, stdin) || (answer[0] != 'y' && answer[0] != 'Y')) {
+        printf("Left Aside running. Nothing was patched.\n");
+        return FALSE;
+    }
+
+    HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+    BOOL stopped = process && TerminateProcess(process, 0) && WaitForSingleObject(process, 10000) == WAIT_OBJECT_0;
+    if (process) CloseHandle(process);
+    if (!stopped) printf("Couldn't terminate Aside (error %lu). Nothing was patched.\n", GetLastError());
+    return stopped;
+}
+
 // Starts Aside as a debugger, patches it the moment Aside.dll is mapped, and lets go.
 int Launch(const wchar_t *exe, wchar_t *commandLine) {
     STARTUPINFOW si = {.cb = sizeof si};
@@ -81,7 +122,8 @@ int Launch(const wchar_t *exe, wchar_t *commandLine) {
             if (event.u.Exception.ExceptionRecord.ExceptionCode != EXCEPTION_BREAKPOINT) status = DBG_EXCEPTION_NOT_HANDLED;
             break;
         case EXIT_PROCESS_DEBUG_EVENT:
-            printf("Aside exited before loading Aside.dll\n");
+            // Aside.exe hands off to a running Aside before it loads the DLL.
+            printf("Aside is already running, so nothing was patched. It may have no windows open. Quit it and try again:\n  Stop-Process -Name Aside\n");
             ContinueDebugEvent(event.dwProcessId, event.dwThreadId, status);
             return 1;
         }

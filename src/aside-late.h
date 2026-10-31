@@ -67,4 +67,6 @@ Edit JumpAlways(const Image *img, DWORD rva, const char *what);
 // Replaces an instruction with xor edx,edx, padded with nops.
 Edit ClearEdx(const Image *img, DWORD rva, int size, const char *what);
 
+// Asks before terminating an Aside already running on this profile. FALSE means don't launch.
+BOOL ReadyToLaunch(const wchar_t *userDataDir);
 int Launch(const wchar_t *exe, wchar_t *commandLine);

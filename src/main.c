@@ -60,6 +60,14 @@ static BOOL Skip(const wchar_t *id) {
     return FALSE;
 }
 
+static void FindUserDataDir(int first, int argc, wchar_t **argv, wchar_t *out) {
+    static const wchar_t option[] = L"--user-data-dir=";
+    size_t optionSize = wcslen(option);
+    ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Aside\\User Data", out, MAX_PATH);
+    for (int i = first; i < argc; i++)
+        if (!wcsncmp(argv[i], option, optionSize)) GetFullPathNameW(argv[i] + optionSize, MAX_PATH, out, NULL);
+}
+
 int wmain(int argc, wchar_t **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     wchar_t exe[MAX_PATH];
@@ -85,6 +93,10 @@ int wmain(int argc, wchar_t **argv) {
             break;
         }
     }
+
+    wchar_t userDataDir[MAX_PATH];
+    FindUserDataDir(first, argc, argv, userDataDir);
+    if (!ReadyToLaunch(userDataDir)) return 1;
 
     size_t size = wcslen(exe) + 3;
     for (int i = first; i < argc; i++) size += wcslen(argv[i]) + 3;
