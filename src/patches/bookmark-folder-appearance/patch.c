@@ -1,0 +1,18 @@
+#include "aside-late.h"
+#include "resolve.h"
+
+// The work happens inside Aside. This only says whether a build still has what it needs.
+static int Find(const Image *img, Edit *edits) {
+    (void)edits;
+    const IMAGE_NT_HEADERS64 *nt = (const void *)(img->base + ((const IMAGE_DOS_HEADER *)img->base)->e_lfanew);
+    Lookup lookup;
+    if (!LookupInit(&lookup, img->base, nt->OptionalHeader.ImageBase)) return Refuse("couldn't index the DLL");
+    Bindings bindings;
+    const char *missing = ResolveBindings(&lookup, &bindings);
+    LookupFree(&lookup);
+    if (missing) return Refuse("didn't find %s", missing);
+    printf("  row vtable %#lx, paint slot %d, bounds +%#lx\n", bindings.rowVtable, bindings.paintBackgroundSlot, bindings.boundsOffset);
+    return RUNS_IN_ASIDE;
+}
+
+PATCH_IN_ASIDE("bookmark-folder-appearance", Find)
