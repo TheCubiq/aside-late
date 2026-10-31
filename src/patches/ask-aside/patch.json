@@ -1,0 +1,6 @@
+{
+  "id": "ask-aside",
+  "title": "Hide Ask Aside",
+  "description": "Hide the Ask Aside toolbar button.",
+  "tested": ["1.0.1022.1"]
+}
