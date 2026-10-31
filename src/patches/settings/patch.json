@@ -1,0 +1,6 @@
+{
+  "id": "settings",
+  "title": "Patched stuff settings",
+  "description": "Add Patched stuff to Aside's settings, with a switch for each patch.",
+  "tested": ["1.0.1022.1"]
+}
