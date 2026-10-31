@@ -1,6 +1,6 @@
 #pragma once
 
-#include "mod/lookup.h"
+#include "aside-late.h"
 
 #define GROUP_COLOR_COUNT 10
 

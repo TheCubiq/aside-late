@@ -45,31 +45,6 @@ static DWORD FindSchedulePaint(const Lookup *lookup, DWORD *boundsOffset) {
     return found;
 }
 
-// Every view that doesn't override a method has it in the same slot. Walk back from each
-// vtable entry to the start of its table and take the index most of them agree on.
-static BOOL FindViewMethodSlot(const Lookup *lookup, const char *trace, int *slot, DWORD *method) {
-    DWORD strings[4];
-    if (LookupStrings(lookup, trace, strings, 4) != 1) return FALSE;
-    size_t count;
-    const Reference *references = LookupCode(lookup, strings[0], &count);
-    int votes[MAX_SLOTS] = {0}, best = 0;
-    for (size_t i = 0; i < count; i++) {
-        const RUNTIME_FUNCTION *fn = LookupFunction(lookup, references[i].site);
-        size_t entries;
-        const Reference *sites = fn ? LookupPointers(lookup, fn->BeginAddress, &entries) : NULL;
-        for (size_t j = 0; sites && j < entries; j++) {
-            int index = 0;
-            while (index < MAX_SLOTS && LookupPointerRva(lookup, lookup->base + sites[j].site - (index + 1) * 8)) index++;
-            if (index < MAX_SLOTS && ++votes[index] > best) {
-                best = votes[index];
-                *slot = index;
-                *method = fn->BeginAddress;
-            }
-        }
-    }
-    return best >= 8;
-}
-
 // OnPaintBackground's only job is background_->Paint(canvas, this):
 // mov rax,[rcx]; mov rax,[rax+slot]
 static int FindBackgroundPaintOffset(const Lookup *lookup, DWORD method) {
@@ -676,7 +651,7 @@ const char *ResolveBindings(const Lookup *lookup, Bindings *bindings) {
     memset(bindings, 0, sizeof *bindings);
     if (!(bindings->rowVtable = LookupClassVtable(lookup, "VerticalBookmarkRowView"))) return "VerticalBookmarkRowView's vtable";
     DWORD paintBackground = 0;
-    if (!FindViewMethodSlot(lookup, "View::OnPaintBackground", &bindings->paintBackgroundSlot, &paintBackground)) return "View::OnPaintBackground's slot";
+    if (!LookupViewMethodSlot(lookup, "View::OnPaintBackground", &bindings->paintBackgroundSlot, &paintBackground)) return "View::OnPaintBackground's slot";
     if ((bindings->backgroundPaintOffset = FindBackgroundPaintOffset(lookup, paintBackground)) < 0) return "Background::Paint";
     if (!(bindings->roundedBackground = FindRoundedBackground(lookup))) return "CreateRoundedRectBackground";
     if (!(bindings->schedulePaint = FindSchedulePaint(lookup, &bindings->boundsOffset))) return "View::SchedulePaint";

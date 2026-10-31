@@ -1,20 +1,4 @@
-#include "aside-late.h"
-
-static BOOL ApplyEdits(HANDLE process, BYTE *base, const Edit *edits, int count) {
-    for (int i = 0; i < count; i++) {
-        BYTE current[MAX_EDIT_SIZE];
-        if (!ReadProcessMemory(process, base + edits[i].rva, current, edits[i].size, NULL) || memcmp(current, edits[i].before, edits[i].size)) return FALSE;
-    }
-    for (int i = 0; i < count; i++) {
-        BYTE *at = base + edits[i].rva;
-        DWORD protect;
-        if (!VirtualProtectEx(process, at, edits[i].size, PAGE_EXECUTE_READWRITE, &protect)) return FALSE;
-        BOOL wrote = WriteProcessMemory(process, at, edits[i].after, edits[i].size, NULL);
-        VirtualProtectEx(process, at, edits[i].size, protect, &protect);
-        if (!wrote || !FlushInstructionCache(process, at, edits[i].size)) return FALSE;
-    }
-    return TRUE;
-}
+#include "launcher.h"
 
 // LoadLibrary in a new thread. It can't take the loader lock until Aside.dll has finished
 // loading, and Aside can't load anything further until the mod has finished starting.
@@ -34,42 +18,6 @@ static BOOL LoadMod(HANDLE process) {
     if (!thread) return FALSE;
     CloseHandle(thread);
     return TRUE;
-}
-
-// One patch refusing doesn't stop the others. Returns how many patches landed.
-static int PatchLoadedDll(HANDLE process, HANDLE file, BYTE *base, int *wanted) {
-    ULONGLONG start = GetTickCount64();
-    Image img = {0};
-    int applied = 0, inAside = 0;
-    *wanted = 0;
-    if (LoadImageFile(file, &img)) {
-        for (int i = 0; i < PatchCount; i++) {
-            if (Patches[i].skipped) continue;
-            ++*wanted;
-            if (Patches[i].inAside) {
-                inAside++;
-                continue;
-            }
-            Edit edits[MAX_EDITS];
-            int count = FindAndPrintEdits(&Patches[i], &img, edits);
-            if (!count) continue;
-            if (ApplyEdits(process, base, edits, count)) applied++;
-            else Refuse("the code in memory didn't match the DLL");
-        }
-    } else {
-        printf("couldn't read Aside.dll\n");
-    }
-    FreeImageFile(&img);
-    if (inAside) {
-        if (LoadMod(process)) {
-            applied += inAside;
-            printf("%d patch%s running inside Aside. Its log is %%LOCALAPPDATA%%\\AsideLate\\mod.log\n", inAside, inAside == 1 ? "" : "es");
-        } else {
-            printf("couldn't load aside-late-mod.dll\n");
-        }
-    }
-    printf("patched %d of %d in %llu ms\n", applied, *wanted, GetTickCount64() - start);
-    return applied;
 }
 
 static BOOL IsAsideDll(HANDLE file) {
@@ -99,7 +47,7 @@ static BOOL CALLBACK CountOpenWindow(HWND window, LPARAM param) {
     return TRUE;
 }
 
-BOOL ReadyToLaunch(const wchar_t *userDataDir) {
+BOOL ReadyToLaunch(const wchar_t *userDataDir, const wchar_t *home) {
     DWORD pid = FindRunningAside(userDataDir);
     if (!pid) return TRUE;
 
@@ -115,31 +63,31 @@ BOOL ReadyToLaunch(const wchar_t *userDataDir) {
     HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
     BOOL stopped = process && TerminateProcess(process, 0) && WaitForSingleObject(process, 10000) == WAIT_OBJECT_0;
     if (process) CloseHandle(process);
-    if (!stopped) printf("Couldn't terminate Aside (error %lu). Nothing was patched.\n", GetLastError());
-    return stopped;
+    if (!stopped) {
+        printf("Couldn't terminate Aside (error %lu). Nothing was patched.\n", GetLastError());
+        return FALSE;
+    }
+    // That wasn't a crash, however soon after a launch it came.
+    wchar_t marker[MAX_PATH];
+    swprintf(marker, MAX_PATH, L"%ls\\session.txt", home);
+    DeleteFileW(marker);
+    return TRUE;
 }
 
-// Starts Aside as a debugger, patches it the moment Aside.dll is mapped, and lets go.
-int Launch(const wchar_t *exe, wchar_t *commandLine) {
+// Starts Aside as a debugger, loads the mod the moment Aside.dll is mapped, and lets go.
+int Launch(const wchar_t *exe, wchar_t *commandLine, const wchar_t *skipped) {
     STARTUPINFOW si = {.cb = sizeof si};
     PROCESS_INFORMATION pi;
     // A process started under a debugger otherwise keeps the slow debug heap after detaching.
     SetEnvironmentVariableW(L"_NO_DEBUG_HEAP", L"1");
-    char skipped[1024] = "";
-    for (int i = 0; i < PatchCount; i++) {
-        if (!Patches[i].skipped) continue;
-        strncat(skipped, Patches[i].id, sizeof skipped - strlen(skipped) - 2);
-        strcat(skipped, ",");
-    }
-    SetEnvironmentVariableA("ASIDE_LATE_SKIP", skipped);
+    SetEnvironmentVariableW(L"ASIDE_LATE_SKIP", skipped);
     if (!CreateProcessW(exe, commandLine, NULL, NULL, FALSE, DEBUG_ONLY_THIS_PROCESS, NULL, NULL, &si, &pi)) {
         printf("couldn't start %ls (error %lu)\n", exe, GetLastError());
         return 1;
     }
     DebugSetProcessKillOnExit(FALSE);
 
-    int applied = 0, wanted = 0;
-    BOOL done = FALSE;
+    BOOL loaded = FALSE, done = FALSE;
     while (!done) {
         DEBUG_EVENT event;
         if (!WaitForDebugEvent(&event, INFINITE)) return 1;
@@ -151,7 +99,7 @@ int Launch(const wchar_t *exe, wchar_t *commandLine) {
         case LOAD_DLL_DEBUG_EVENT:
             if (event.u.LoadDll.hFile) {
                 if (IsAsideDll(event.u.LoadDll.hFile)) {
-                    applied = PatchLoadedDll(pi.hProcess, event.u.LoadDll.hFile, event.u.LoadDll.lpBaseOfDll, &wanted);
+                    loaded = LoadMod(pi.hProcess);
                     done = TRUE;
                 }
                 CloseHandle(event.u.LoadDll.hFile);
@@ -170,10 +118,15 @@ int Launch(const wchar_t *exe, wchar_t *commandLine) {
     }
     DebugActiveProcessStop(pi.dwProcessId);
 
+    if (!loaded) {
+        printf("couldn't load aside-late-mod.dll\n");
+        return 1;
+    }
     // An Aside already running on this profile takes over and this process quits straight away.
-    if (applied && WaitForSingleObject(pi.hProcess, 5000) == WAIT_OBJECT_0) {
+    if (WaitForSingleObject(pi.hProcess, 5000) == WAIT_OBJECT_0) {
         printf("Aside handed off to a copy that's already running, so the patches didn't take. Close Aside and try again.\n");
         return 1;
     }
-    return applied == wanted ? 0 : 1;
+    printf("Aside is running with aside-late. Open Settings, then Patched stuff.\n");
+    return 0;
 }

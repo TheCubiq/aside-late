@@ -2,17 +2,12 @@
 // Watching those reads adds a script to main.html, and gives the page a folder of its own at
 // /aside-late/ that doesn't exist on disk. Nothing in Aside's files changes.
 
-#include "mod/mod.h"
+#include "internal.h"
 
-#include <stdio.h>
-#include <wchar.h>
-
-#define PATH_SIZE (MAX_PATH * 2)
-#define MAX_DISABLED 64
-#define MAX_ID 64
+#define MAX_ID ID_SIZE
 #define MAX_RECENT 32
 
-__asm__(".section .rdata,\"dr\"\n.Lscript:\n.incbin \"src/patches/settings/settings.js\"\n.Lscript_end:\n.text");
+__asm__(".section .rdata,\"dr\"\n.Lscript:\n.incbin \"src/mod/settings.js\"\n.Lscript_end:\n.text");
 
 static const wchar_t Extension[] = L"\\AsideAgentManager\\";
 static const wchar_t Folder[] = L"\\aside-late\\";
@@ -25,64 +20,88 @@ typedef struct {
 } Opened;
 
 static CRITICAL_SECTION Lock;
-static wchar_t Home[MAX_PATH];
 static Opened Recent[MAX_RECENT];
 static unsigned NextRecent;
 
-static BOOL IsId(const wchar_t *id) {
-    if (!*id) return FALSE;
-    for (; *id; id++)
-        if (!((*id >= L'a' && *id <= L'z') || (*id >= L'0' && *id <= L'9') || *id == L'-')) return FALSE;
+#define HomePath HomePathW
+#define WriteWhole WriteWholeFile
+
+// Requests from the page look like /aside-late/<verb>/<...>/<nonce>. Aside looks at a file before it
+// opens it, so one request arrives more than once, and only the first of a nonce counts.
+static BOOL IsNewRequest(const wchar_t *request) {
+    static wchar_t last[PATH_SIZE];
+    EnterCriticalSection(&Lock);
+    BOOL fresh = wcscmp(last, request) != 0;
+    if (fresh) wcsncpy(last, request, PATH_SIZE - 1);
+    LeaveCriticalSection(&Lock);
+    return fresh;
+}
+
+static BOOL IsName(const char *text) {
+    if (!*text) return FALSE;
+    for (; *text; text++)
+        if (!((*text >= 'a' && *text <= 'z') || (*text >= 'A' && *text <= 'Z') || (*text >= '0' && *text <= '9') || strchr("-_.~", *text))) return FALSE;
     return TRUE;
 }
 
-static void HomePath(wchar_t *out, const wchar_t *name) {
-    swprintf(out, PATH_SIZE, L"%ls\\%ls", Home, name);
-}
-
-static BOOL WriteWhole(const wchar_t *path, const void *data, size_t size) {
-    FILE *file = _wfopen(path, L"wb");
-    if (!file) return FALSE;
-    BOOL wrote = fwrite(data, 1, size, file) == size;
-    return fclose(file) == 0 && wrote;
-}
-
-// disabled.txt lists one patch per line. The launcher reads it before it patches anything.
-static void SetPatchEnabled(const wchar_t *id, BOOL enabled) {
-    char lines[MAX_DISABLED][MAX_ID], wanted[MAX_ID];
+static int SplitRequest(const wchar_t *request, char parts[][128], int max) {
     int count = 0;
-    snprintf(wanted, sizeof wanted, "%.63ls", id);
-    wchar_t path[PATH_SIZE];
-    HomePath(path, L"disabled.txt");
-
-    EnterCriticalSection(&Lock);
-    FILE *file = _wfopen(path, L"r");
-    if (file) {
-        while (count < MAX_DISABLED && fgets(lines[count], MAX_ID, file)) {
-            lines[count][strcspn(lines[count], "\r\n")] = 0;
-            if (lines[count][0] && strcmp(lines[count], wanted)) count++;
-        }
-        fclose(file);
+    while (count < max) {
+        const wchar_t *slash = wcschr(request, L'\\');
+        size_t size = slash ? (size_t)(slash - request) : wcslen(request);
+        if (size >= 128) return 0;
+        for (size_t i = 0; i < size; i++) parts[count][i] = request[i] < 128 ? (char)request[i] : '?';
+        parts[count++][size] = 0;
+        if (!slash) break;
+        request = slash + 1;
     }
-    if (!enabled && count < MAX_DISABLED) strcpy(lines[count++], wanted);
-    if ((file = _wfopen(path, L"w"))) {
-        for (int i = 0; i < count; i++) fprintf(file, "%s\n", lines[i]);
-        fclose(file);
-    } else {
-        ModLog("couldn't save disabled.txt");
-    }
-    LeaveCriticalSection(&Lock);
+    return count;
 }
 
-// /aside-late/set/<id>/<0 or 1>/<anything>. Asking twice does no harm, and Aside looks at a file
-// before it opens it.
-static void RunSet(const wchar_t *request) {
-    wchar_t id[MAX_ID];
-    const wchar_t *slash = wcschr(request, L'\\');
-    if (!slash || slash - request >= MAX_ID || (slash[1] != L'0' && slash[1] != L'1')) return;
-    wmemcpy(id, request, slash - request);
-    id[slash - request] = 0;
-    if (IsId(id)) SetPatchEnabled(id, slash[1] == L'1');
+// repos.txt holds one owner/name per line.
+static void ChangeRepos(const char *repo, BOOL add) {
+    wchar_t path[PATH_SIZE];
+    HomePath(path, L"repos.txt");
+    char *text = ReadWholeFile(path, NULL);
+    FILE *file = _wfopen(path, L"w");
+    if (file) {
+        if (text)
+            for (char *line = strtok(text, "\r\n"); line; line = strtok(NULL, "\r\n"))
+                if (strcmp(line, repo)) fprintf(file, "%s\n", line);
+        if (add) fprintf(file, "%s\n", repo);
+        fclose(file);
+    }
+    free(text);
+}
+
+// A repo travels in a path as owner~name. A nonce always comes last.
+static void RunRequest(const wchar_t *request) {
+    if (!IsNewRequest(request)) return;
+    char parts[5][128] = {{0}};
+    int count = SplitRequest(request, parts, 5);
+    char *tilde;
+    if (count == 4 && !strcmp(parts[0], "set") && IsName(parts[1])) {
+        QueueSet(parts[1], parts[2][0] == '1');
+    } else if (count == 5 && !strcmp(parts[0], "install") && IsName(parts[1]) && IsName(parts[2]) && IsName(parts[3])) {
+        if ((tilde = strchr(parts[1], '~'))) *tilde = '/';
+        QueueInstall(parts[1], parts[2], parts[3]);
+    } else if (count == 3 && !strcmp(parts[0], "remove") && IsName(parts[1])) {
+        QueueRemove(parts[1]);
+    } else if (count == 4 && !strcmp(parts[0], "repo") && IsName(parts[2])) {
+        if ((tilde = strchr(parts[2], '~'))) *tilde = '/';
+        ChangeRepos(parts[2], !strcmp(parts[1], "add"));
+    }
+}
+
+// The addresses the page should use to reach GitHub.
+static void SaveGithubAddresses(void) {
+    char api[256], raw[256], text[600];
+    if (!GetEnvironmentVariableA("ASIDE_LATE_GITHUB_API", api, sizeof api)) strcpy(api, "https://api.github.com");
+    if (!GetEnvironmentVariableA("ASIDE_LATE_GITHUB_RAW", raw, sizeof raw)) strcpy(raw, "https://raw.githubusercontent.com");
+    int size = snprintf(text, sizeof text, "{\"api\":\"%s\",\"raw\":\"%s\"}\n", api, raw);
+    wchar_t path[PATH_SIZE];
+    HomePath(path, L"web\\github.json");
+    WriteWhole(path, text, size);
 }
 
 // A copy of main.html with the script added, kept per version of the extension.
@@ -132,11 +151,11 @@ static const wchar_t *Redirect(const wchar_t *path, wchar_t *out, wchar_t *clean
     if (folder) {
         const wchar_t *request = folder + wcslen(Folder);
         if (wcsstr(request, L"..")) return path;
-        if (!wcsncmp(request, L"set\\", 4)) {
-            RunSet(request + 4);
+        if (!wcsncmp(request, L"set\\", 4) || !wcsncmp(request, L"install\\", 8) || !wcsncmp(request, L"remove\\", 7) || !wcsncmp(request, L"repo\\", 5)) {
+            RunRequest(request);
             HomePath(out, L"web\\ok.txt");
-        } else if (!wcscmp(request, L"disabled.txt")) {
-            HomePath(out, L"disabled.txt");
+        } else if (!wcscmp(request, L"repos.txt")) {
+            HomePath(out, L"repos.txt");
             if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) WriteWhole(out, "", 0);
         } else {
             wchar_t name[MAX_PATH];
@@ -235,16 +254,13 @@ static void SaveBrowserVersion(BYTE *base) {
     if (size > 0) WriteWhole(path, version, size);
 }
 
-static void Start(const Lookup *lookup, BYTE *base) {
-    (void)lookup;
+void SettingsStart(BYTE *base) {
     const char *script, *end;
     __asm__("leaq .Lscript(%%rip), %0" : "=r"(script));
     __asm__("leaq .Lscript_end(%%rip), %0" : "=r"(end));
 
-    if (!GetEnvironmentVariableW(L"ASIDE_LATE_HOME", Home, MAX_PATH)) {
-        ModLog("settings refused: ASIDE_LATE_HOME isn't set");
-        return;
-    }
+    char skipped[1024];
+    if (GetEnvironmentVariableA("ASIDE_LATE_SKIP", skipped, sizeof skipped) && strstr(skipped, "settings,")) return;
     InitializeCriticalSection(&Lock);
     wchar_t path[PATH_SIZE];
     HomePath(path, L"web");
@@ -254,6 +270,7 @@ static void Start(const Lookup *lookup, BYTE *base) {
     HomePath(path, L"web\\ok.txt");
     wrote = WriteWhole(path, "ok", 2) && wrote;
     SaveBrowserVersion(base);
+    SaveGithubAddresses();
     if (!wrote) {
         ModLog("settings refused: couldn't write its files");
         return;
@@ -269,5 +286,3 @@ static void Start(const Lookup *lookup, BYTE *base) {
     }
     ModLog("settings ready");
 }
-
-MOD("settings", Start)

@@ -1,4 +1,4 @@
-#include "lookup.h"
+#include "internal.h"
 
 static const IMAGE_SECTION_HEADER *FindSection(const IMAGE_NT_HEADERS64 *nt, const char *name) {
     const IMAGE_SECTION_HEADER *s = IMAGE_FIRST_SECTION(nt);
@@ -189,4 +189,72 @@ DWORD LookupClassVtable(const Lookup *lookup, const char *className) {
         }
     }
     return best;
+}
+
+DWORD LookupVtableInstalledBy(const Lookup *lookup, const RUNTIME_FUNCTION *constructor) {
+    for (DWORD rva = constructor->BeginAddress; rva + 10 <= constructor->EndAddress; rva++) {
+        DWORD vtable = VtableStoredAtZero(lookup, rva);
+        if (vtable) return vtable;
+    }
+    return 0;
+}
+
+#define MAX_VIEW_SLOTS 512
+
+// Every view that doesn't override a method has it in the same slot. Walk back from each
+// vtable entry to the start of its table and take the index most of them agree on.
+BOOL LookupViewMethodSlot(const Lookup *lookup, const char *trace, int *slot, DWORD *method) {
+    DWORD strings[4];
+    if (LookupStrings(lookup, trace, strings, 4) != 1) return FALSE;
+    size_t count;
+    const Reference *references = LookupCode(lookup, strings[0], &count);
+    int votes[MAX_VIEW_SLOTS] = {0}, best = 0;
+    for (size_t i = 0; i < count; i++) {
+        const RUNTIME_FUNCTION *fn = LookupFunction(lookup, references[i].site);
+        size_t entries;
+        const Reference *sites = fn ? LookupPointers(lookup, fn->BeginAddress, &entries) : NULL;
+        for (size_t j = 0; sites && j < entries; j++) {
+            int index = 0;
+            while (index < MAX_VIEW_SLOTS && LookupPointerRva(lookup, lookup->base + sites[j].site - (index + 1) * 8)) index++;
+            if (index < MAX_VIEW_SLOTS && ++votes[index] > best) {
+                best = votes[index];
+                *slot = index;
+                *method = fn->BeginAddress;
+            }
+        }
+    }
+    return best >= 8;
+}
+
+// cmp dl,[rcx+visible]; je skip; mov rax,[rcx]; mov rax,[rax+SetVisible]
+BOOL LookupVisibility(const Lookup *lookup, int *setVisibleSlot, DWORD *visibleOffset) {
+    enum { MAX_KINDS = 16 };
+    struct {
+        DWORD visible, method;
+        int votes;
+    } kinds[MAX_KINDS] = {0};
+    DWORD start = lookup->text->VirtualAddress, end = start + lookup->text->Misc.VirtualSize - 20;
+    for (DWORD rva = start; rva < end; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (p[0] != 0x3a || p[1] != 0x91 || p[6] != 0x74 || p[8] != 0x48 || p[9] != 0x8b || p[10] != 0x01) continue;
+        if (p[11] != 0x48 || p[12] != 0x8b || p[13] != 0x80) continue;
+        DWORD visible = *(const DWORD *)(p + 2), method = *(const DWORD *)(p + 14);
+        if (method % 8 || method > 0x1000 || visible > 0x1000) continue;
+        for (int i = 0; i < MAX_KINDS; i++) {
+            if (kinds[i].votes && (kinds[i].visible != visible || kinds[i].method != method)) continue;
+            kinds[i].visible = visible;
+            kinds[i].method = method;
+            kinds[i].votes++;
+            break;
+        }
+    }
+    int best = 0, total = 0;
+    for (int i = 0; i < MAX_KINDS; i++) {
+        total += kinds[i].votes;
+        if (kinds[i].votes > kinds[best].votes) best = i;
+    }
+    if (kinds[best].votes < 3 || kinds[best].votes * 2 <= total) return FALSE;
+    *setVisibleSlot = kinds[best].method / 8;
+    *visibleOffset = kinds[best].visible;
+    return TRUE;
 }

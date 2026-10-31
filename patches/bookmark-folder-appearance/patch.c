@@ -1,7 +1,6 @@
 // Colors bookmark folders and changes their icons. Aside's classes and methods are bound by name in resolve.c, and
 // the shape of its objects is learned here from the first row that paints.
 
-#include "mod/mod.h"
 #include "resolve.h"
 
 #include <math.h>
@@ -10,6 +9,7 @@
 
 #define MAX_FOLDERS 1024
 #define MAX_CONTAINERS 32
+#define MAX_ROWS 4096
 #define GUID_SIZE 36
 #define INDENT 14
 #define CORNER_RADIUS 8.0f
@@ -67,6 +67,7 @@ static char StorePath[MAX_PATH];
 static Container Containers[MAX_CONTAINERS];
 static int ContainerCount;
 static void *Rounded;
+static UINT_PTR Timer;
 
 static const IconEntry *Icons;
 // Folders store Aside's group colors, the same values its menu's buttons use.
@@ -91,7 +92,7 @@ static int FindIcon(const char *key) {
 }
 
 static void LoadFolders(void) {
-    if (!ExpandEnvironmentStringsA("%ASIDE_LATE_HOME%\\folders.tsv", StorePath, MAX_PATH)) return;
+    HomeFile("folders.tsv", StorePath, MAX_PATH);
     FILE *file = fopen(StorePath, "r");
     if (!file) return;
     char line[128];
@@ -424,7 +425,7 @@ static void AddContainer(BYTE *view) {
         if (Containers[i].view == view) return;
     if (ContainerCount == MAX_CONTAINERS) return;
     void **vtable = *(void ***)view;
-    if (!SwapVtableEntry(vtable, Native.paintBackgroundSlot, ContainerPaint, (void **)&OriginalContainerPaint)) {
+    if (!HookVtable(vtable, Native.paintBackgroundSlot, ContainerPaint, (void **)&OriginalContainerPaint)) {
         ModLog("couldn't hook the rows container");
         return;
     }
@@ -518,9 +519,9 @@ static BOOL RowMousePressed(void *view, const void *event) {
 }
 
 static void StartOnUiThread(void) {
-    ((CreateRounded)(Base + Native.roundedBackground))(&Rounded, 1ull << 32, CORNER_RADIUS, 0);
+    if (!Rounded) ((CreateRounded)(Base + Native.roundedBackground))(&Rounded, 1ull << 32, CORNER_RADIUS, 0);
     if (!Rounded) ModLog("couldn't create the block background");
-    SetTimer(NULL, 0, TICK_MS, Tick);
+    if (!Timer) Timer = SetTimer(NULL, 0, TICK_MS, Tick);
 }
 
 static void RowPaint(void *view, void *canvas) {
@@ -539,30 +540,47 @@ static void RowPaint(void *view, void *canvas) {
                ParentOffset, ChildrenOffset, NodeOffset, GuidOffset, NodeParentOffset);
         Learned = TRUE;
         MenuInit(&Native, Base, ChildrenOffset + 8);
-        StartOnUiThread();
     }
+    StartOnUiThread();
     BYTE *parent = *(BYTE **)(row + ParentOffset);
     if (!parent) return;
     AddContainer(parent);
 }
 
-static void Start(const Lookup *lookup, BYTE *base) {
+PATCH_START() {
     const char *missing = ResolveBindings(lookup, &Native);
-    if (missing) {
-        ModLog("bookmark-folder-appearance refused: didn't find %s", missing);
-        return;
-    }
+    if (missing) return missing;
     Base = base;
     RowVtable = base + Native.rowVtable;
     Icons = (const IconEntry *)(base + Native.iconTable);
     LoadFolders();
-    if (!SwapVtableEntry(RowVtable, Native.paintBackgroundSlot, RowPaint, (void **)&OriginalRowPaint)) {
+    return NULL;
+}
+
+PATCH_ENABLE() {
+    if (!HookVtable(RowVtable, Native.paintBackgroundSlot, RowPaint, (void **)&OriginalRowPaint)) {
         ModLog("couldn't hook the row");
         return;
     }
-    if (!SwapVtableEntry(RowVtable, Native.mousePressedSlot, RowMousePressed, (void **)&OriginalMousePressed)) ModLog("couldn't hook the row's clicks");
-    ModLog("bookmark-folder-appearance ready: row vtable %#lx, paint slot %d, bounds +%#lx, %d folders stored",
-           Native.rowVtable, Native.paintBackgroundSlot, Native.boundsOffset, FolderCount);
+    if (!HookVtable(RowVtable, Native.mousePressedSlot, RowMousePressed, (void **)&OriginalMousePressed)) ModLog("couldn't hook the row's clicks");
+    // Rows on screen paint again, and that brings back everything else.
+    void *rows[MAX_ROWS];
+    int count = FindObjects(RowVtable, rows, MAX_ROWS);
+    for (int i = 0; i < count; i++) Repaint(rows[i]);
+    ModLog("bookmark-folder-appearance ready: row vtable %#lx, paint slot %d, bounds +%#lx, %d folders stored, %d rows live",
+           Native.rowVtable, Native.paintBackgroundSlot, Native.boundsOffset, FolderCount, count);
 }
 
-MOD("bookmark-folder-appearance", Start)
+PATCH_DISABLE() {
+    if (Timer) KillTimer(NULL, Timer);
+    Timer = 0;
+    MenuTick();
+    for (int i = 0; i < ContainerCount; i++) {
+        size_t count;
+        void **children = ChildrenOf(Containers[i].view, &count);
+        for (size_t j = 0; j < count; j++)
+            if (IsRow(children[j])) RestoreRow(children[j]);
+        Repaint(Containers[i].view);
+    }
+    ContainerCount = 0;
+}

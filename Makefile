@@ -1,19 +1,30 @@
-CFLAGS := -O2 -Wall -Wextra -static -Isrc -D_WIN32_WINNT=0x0A00
-SHARED := src/mod/lookup.c $(wildcard src/patches/*/resolve.c)
-SOURCES := $(wildcard src/*.c src/patches/*/patch.c) $(SHARED)
-MOD_SOURCES := $(wildcard src/mod/*.c src/patches/*/mod.c src/patches/*/menu.c $(wildcard src/patches/*/resolve.c))
-DEPENDS := $(wildcard src/*.h src/mod/*.h src/patches/*/*.h src/patches/*/patch.json src/patches/*/*.js)
+BUILD ?= build
+CFLAGS := -O2 -Wall -Wextra -static -Isrc/sdk -D_WIN32_WINNT=0x0A00
+PATCHES := $(notdir $(wildcard patches/*))
+SDK_HEADERS := $(wildcard src/sdk/*.h)
 
-all: build/aside-late.exe build/aside-late-mod.dll
+all: $(BUILD)/aside-late.exe $(BUILD)/aside-late-mod.dll $(addprefix $(BUILD)/sdk/,$(notdir $(SDK_HEADERS))) $(PATCHES:%=$(BUILD)/patches/%/patch.dll)
 
-build/aside-late.exe: $(SOURCES) $(DEPENDS) | build
-	gcc $(CFLAGS) -municode -o $@ $(SOURCES)
+$(BUILD)/aside-late.exe: $(wildcard src/launcher/*) | $(BUILD)
+	gcc $(CFLAGS) -municode -o $@ $(wildcard src/launcher/*.c)
 
-build/aside-late-mod.dll: $(MOD_SOURCES) $(DEPENDS) | build
-	gcc $(CFLAGS) -shared -o $@ $(MOD_SOURCES) -ladvapi32
+$(BUILD)/aside-late-mod.dll: $(wildcard src/mod/*) $(SDK_HEADERS) | $(BUILD)
+	gcc $(CFLAGS) -DASIDE_LATE_MOD -Isrc/mod -shared -o $@ $(wildcard src/mod/*.c) -lwinhttp
 
-build:
-	mkdir build
+# The same headers a patch installed later is compiled against.
+$(BUILD)/sdk/%.h: src/sdk/%.h | $(BUILD)/sdk
+	copy /Y $(subst /,\,$<) $(subst /,\,$@) >NUL
+
+define PATCH_RULES
+$(BUILD)/patches/$(1)/patch.dll: $(wildcard patches/$(1)/*) $(SDK_HEADERS) $(BUILD)/aside-late-mod.dll
+	@if not exist $(subst /,\,$(BUILD)/patches/$(1)) mkdir $(subst /,\,$(BUILD)/patches/$(1))
+	copy /Y $(subst /,\,patches/$(1)/patch.json $(BUILD)/patches/$(1)/patch.json) >NUL
+	gcc $(CFLAGS) -shared -o $$@ $(wildcard patches/$(1)/*.c) $(BUILD)/aside-late-mod.dll
+endef
+$(foreach patch,$(PATCHES),$(eval $(call PATCH_RULES,$(patch))))
+
+$(BUILD) $(BUILD)/sdk:
+	mkdir $(subst /,\,$@)
 
 clean:
 	git clean -fdX build

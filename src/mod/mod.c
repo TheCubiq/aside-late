@@ -1,23 +1,13 @@
-#include "mod.h"
+// The DLL loaded into Aside. It loads the patches, and gives them the SDK in aside-late.h.
+
+#include "internal.h"
 
 #include <stdarg.h>
-#include <stdio.h>
 
-#define MAX_MODS 32
+wchar_t Home[MAX_PATH];
+HMODULE ThisModule;
 
-static struct {
-    const char *id;
-    ModStart start;
-} Mods[MAX_MODS];
-static int ModCount;
 static FILE *Log;
-
-void RegisterMod(const char *id, ModStart start) {
-    if (ModCount < MAX_MODS) {
-        Mods[ModCount].id = id;
-        Mods[ModCount++].start = start;
-    }
-}
 
 void ModLog(const char *format, ...) {
     if (!Log) return;
@@ -29,86 +19,60 @@ void ModLog(const char *format, ...) {
     fflush(Log);
 }
 
-BOOL SwapVtableEntry(void **vtable, int slot, void *replacement, void **original) {
-    if (vtable[slot] == replacement) return TRUE;
-    DWORD protect;
-    if (!VirtualProtect(vtable + slot, sizeof *vtable, PAGE_READWRITE, &protect)) return FALSE;
-    *original = vtable[slot];
-    vtable[slot] = replacement;
-    VirtualProtect(vtable + slot, sizeof *vtable, protect, &protect);
-    return TRUE;
+void HomePathW(wchar_t *out, const wchar_t *name) {
+    swprintf(out, PATH_SIZE, L"%ls\\%ls", Home, name);
 }
 
-BOOL HookImport(BYTE *module, const char *dll, const char *name, void *replacement, void **original) {
-    const IMAGE_NT_HEADERS64 *nt = (const void *)(module + ((const IMAGE_DOS_HEADER *)module)->e_lfanew);
-    const IMAGE_DATA_DIRECTORY *directory = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-    if (!directory->VirtualAddress) return FALSE;
-    const IMAGE_IMPORT_DESCRIPTOR *import = (const void *)(module + directory->VirtualAddress);
-    for (; import->Name; import++) {
-        if (_stricmp((const char *)module + import->Name, dll) || !import->OriginalFirstThunk) continue;
-        const IMAGE_THUNK_DATA64 *names = (const void *)(module + import->OriginalFirstThunk);
-        IMAGE_THUNK_DATA64 *slots = (void *)(module + import->FirstThunk);
-        for (size_t i = 0; names[i].u1.AddressOfData; i++) {
-            if (IMAGE_SNAP_BY_ORDINAL64(names[i].u1.Ordinal)) continue;
-            const IMAGE_IMPORT_BY_NAME *entry = (const void *)(module + names[i].u1.AddressOfData);
-            if (strcmp((const char *)entry->Name, name)) continue;
-            DWORD protect;
-            if (!VirtualProtect(&slots[i], sizeof slots[i], PAGE_READWRITE, &protect)) return FALSE;
-            *original = (void *)slots[i].u1.Function;
-            slots[i].u1.Function = (ULONGLONG)replacement;
-            VirtualProtect(&slots[i], sizeof slots[i], protect, &protect);
-            return TRUE;
-        }
+void HomeFile(const char *name, char *out, size_t size) {
+    snprintf(out, size, "%ls\\%s", Home, name);
+}
+
+BOOL WriteWholeFile(const wchar_t *path, const void *data, size_t size) {
+    FILE *file = _wfopen(path, L"wb");
+    if (!file) return FALSE;
+    BOOL wrote = fwrite(data, 1, size, file) == size;
+    return fclose(file) == 0 && wrote;
+}
+
+char *ReadWholeFile(const wchar_t *path, size_t *size) {
+    FILE *file = _wfopen(path, L"rb");
+    if (!file) return NULL;
+    fseek(file, 0, SEEK_END);
+    long length = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    char *data = length >= 0 ? malloc((size_t)length + 1) : NULL;
+    if (data && fread(data, 1, (size_t)length, file) != (size_t)length) {
+        free(data);
+        data = NULL;
     }
-    return FALSE;
+    fclose(file);
+    if (!data) return NULL;
+    data[length] = 0;
+    if (size) *size = (size_t)length;
+    return data;
 }
 
-BOOL SafeRead(const void *from, void *to, size_t size) {
-    SIZE_T got;
-    return ReadProcessMemory(GetCurrentProcess(), from, to, size, &got) && got == size;
-}
-
-static void OpenLog(void) {
-    char path[MAX_PATH];
-    if (!GetEnvironmentVariableA("ASIDE_LATE_HOME", path, MAX_PATH)) return;
-    strncat(path, "\\mod.log", MAX_PATH - strlen(path) - 1);
-    Log = fopen(path, "w");
-}
-
-static BOOL IsSkipped(const char *id) {
-    char skipped[1024];
-    DWORD len = GetEnvironmentVariableA("ASIDE_LATE_SKIP", skipped, sizeof skipped);
-    if (!len || len >= sizeof skipped) return FALSE;
-    for (char *name = strtok(skipped, ","); name; name = strtok(NULL, ","))
-        if (!strcmp(name, id)) return TRUE;
-    return FALSE;
-}
-
-// Runs while Aside's loader is waiting, so every mod is in place before any window exists.
+// Runs while Aside's loader is waiting, so every patch is in place before any window exists.
 static void Start(void) {
-    OpenLog();
     BYTE *base = (BYTE *)GetModuleHandleW(L"Aside.dll");
-    if (!base) {
-        ModLog("Aside.dll isn't loaded");
-        return;
-    }
-    ULONGLONG started = GetTickCount64();
-    Lookup lookup;
-    if (!LookupInit(&lookup, base, (ULONGLONG)base)) {
-        ModLog("couldn't index Aside.dll");
-        return;
-    }
-    for (int i = 0; i < ModCount; i++)
-        if (!IsSkipped(Mods[i].id)) Mods[i].start(&lookup, base);
-    LookupFree(&lookup);
-    ModLog("ready in %llu ms", GetTickCount64() - started);
+    if (!base) return;  // The launcher loads this too, to ask it about patches.
+    if (!GetEnvironmentVariableW(L"ASIDE_LATE_HOME", Home, MAX_PATH)) return;
+    wchar_t path[PATH_SIZE];
+    HomePathW(path, L"mod.log");
+    Log = _wfopen(path, L"w");
+    HooksInit();
+    SettingsStart(base);
+    PatchesStart(base);
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
     (void)reserved;
     if (reason == DLL_PROCESS_ATTACH) {
+        ThisModule = instance;
         DisableThreadLibraryCalls(instance);
         Start();
+    } else if (reason == DLL_PROCESS_DETACH && Home[0]) {
+        PatchesClean();
     }
     return TRUE;
 }
