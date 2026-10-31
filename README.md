@@ -9,11 +9,15 @@ loaded, then edits that one running process.
 
 ## Use
 
-Close Aside, then run:
+Run:
 
 ```powershell
 .\build\aside-late.exe
 ```
+
+If Aside is already running on that profile, it asks whether to terminate it first,
+including one in the background with no windows open. Answer no and it leaves Aside alone
+and opens nothing. Terminating is a force-quit, so Aside may offer to restore your tabs.
 
 | Option | What it does |
 | --- | --- |
@@ -22,11 +26,14 @@ Close Aside, then run:
 | `--exe <Aside.exe>` | Use another installation |
 | `--scan <Aside.dll> ...` | Show what each patch would edit, without running anything |
 
-Anything else goes to Aside, such as `--user-data-dir=<path>`. To undo everything, start
-Aside normally.
+Anything else goes to Aside, such as `--user-data-dir=<path>`.
 
-If Aside is already running on that profile, the new process hands off to it and the
-patches don't take. The launcher tells you when that happens.
+To undo everything, quit the patched Aside and start it normally. Closing its windows may
+not be enough, because Aside can keep running in the background:
+
+```powershell
+Stop-Process -Name Aside
+```
 
 ## Build
 
