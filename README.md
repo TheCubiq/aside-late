@@ -115,6 +115,9 @@ Nothing is stored per build:
 - **Object layouts** are learned from the first row that paints, by shape: a parent lists
   the row among its children, a node holds a GUID and is listed by its parent, and an image
   view holds the icon and color it was just given.
+- **Colors** are Aside's theme colors, so they follow light and dark mode. A small switch
+  maps each group color to its background ID, with the icon and title IDs just before it.
+  `Background::Paint` shows how to resolve an ID, for the tint's own alpha.
 - **Reset** calls the row's own icon function, so a folder goes back to whatever Aside draws.
 
 ## Limits
