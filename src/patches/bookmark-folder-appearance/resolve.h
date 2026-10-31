@@ -22,6 +22,43 @@ typedef struct {
 
     DWORD iconTable;           // Aside's table of folder icons.
     int iconCount;
+
+    // How a right click reaches a row, and what the row's owner does with it.
+    int mousePressedSlot;      // VerticalBookmarkRowView::OnMousePressed.
+    DWORD eventFlagsOffset, eventLocationOffset;
+    DWORD widgetMethodOffset;  // View::GetWidget in a view's vtable.
+    DWORD convertToScreen;     // View::ConvertPointToScreen.
+    DWORD rightClickOffset;    // The row's right click callback.
+    DWORD rightClick;          // What the owner binds to it.
+    DWORD nodeTypeOffset, nodeManagedOffset, nodeIdOffset;
+    DWORD ownerCommandOffset, ownerNodeIdOffset, ownerHasNodeOffset, ownerGenerationOffset;
+    DWORD menuClosed;          // Runs the command once a folder's menu has closed.
+
+    // Parts of Aside's tab group menu, read out of the function that builds it.
+    DWORD operatorNew, operatorDelete;
+    DWORD viewAllocator, viewAllocate, viewConstruct;
+    DWORD addChild, setPreferredSize, setLayout;
+    DWORD layoutConstruct, boxVtables[2], crossAlignOffset, mainAlignOffset;
+    DWORD borderVtable, setBorderOffset;
+
+    DWORD colorIds;            // The menu's colors, in its order.
+    int colorCount;
+    DWORD colorSize, buttonConstruct, updateColor, setFocusable, installHighlight;
+    DWORD colorIdOffset, colorCallbackOffset, colorSelectedOffset, colorFlagOffset, colorInkOffset;
+    struct {
+        DWORD offset, vtable;
+    } colorVtables[16];
+    int colorVtableCount;
+
+    DWORD itemSize, itemConstruct;
+    DWORD themedColorId;       // What the menu's own icons are colored with.
+
+    DWORD popupSize, popupConstruct, popupDestruct, popupSetContents;
+    DWORD widgetCreate, widgetPrepare, widgetShow, widgetClose;
+    DWORD pickerSize, pickerConstruct;
+
+    // By name, each falling back to the folder icon.
+    DWORD changeIconIcon, resetIcon, renameIcon, deleteIcon, manageIcon;
 } Bindings;
 
 // One entry of the icon table.

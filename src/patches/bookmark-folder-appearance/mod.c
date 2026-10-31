@@ -4,8 +4,9 @@
 #include "mod/mod.h"
 #include "resolve.h"
 
+#include <math.h>
 #include <stdio.h>
-#include "flyout.h"
+#include "menu.h"
 
 #define MAX_FOLDERS 1024
 #define MAX_CONTAINERS 32
@@ -15,8 +16,10 @@
 #define TICK_MS 16
 #define SCAN_LIMIT 0x700
 #define ICON_SIZE 16
-#define MAX_ICONS 64
 #define NEUTRAL_ICON_COLOR 0xB0B3B8
+#define COLOR_COUNT 9
+#define BUTTON_MASK 0xf800
+#define RIGHT_BUTTON 0x2000
 
 typedef struct {
     char guid[GUID_SIZE];
@@ -38,11 +41,14 @@ typedef void (*SetImage)(void *view, const void *image);
 typedef void (*DestroyImage)(void *image);
 typedef void (*UpdateIcons)(void *row);
 typedef void (*SetTitleColor)(void *label, ULONGLONG color);
+typedef BOOL (*MousePressed)(void *row, const void *event);
+typedef void (*ConvertToScreen)(const void *view, POINT *point);
 
 static Bindings Native;
 static BYTE *Base;
 static void *RowVtable;
 static PaintBackground OriginalRowPaint, OriginalContainerPaint;
+static MousePressed OriginalMousePressed;
 
 // Learned from live objects.
 static DWORD ParentOffset, ChildrenOffset, NodeOffset, GuidOffset, NodeParentOffset;
@@ -56,15 +62,12 @@ static char StorePath[MAX_PATH];
 
 static Container Containers[MAX_CONTAINERS];
 static int ContainerCount;
-static BYTE *LastPaintedContainer;
 static void *Rounded;
 
 static const IconEntry *Icons;
-static const wchar_t *IconNames[MAX_ICONS];
-static size_t IconNameSizes[MAX_ICONS];
-
+// Indexed by Aside's own color IDs, which is what's stored and what the menu's buttons use.
 static const DWORD FolderColors[COLOR_COUNT] = {
-    0xDADCE0, 0x8AB4F8, 0xF28B82, 0xFDD663, 0x81C995, 0xFF8BCB, 0xC58AF9, 0x78D9EC,
+    0xDADCE0, 0x8AB4F8, 0xF28B82, 0xFDD663, 0x81C995, 0xFF8BCB, 0xC58AF9, 0x78D9EC, 0xFCAD70,
 };
 
 static int FindIcon(const char *key) {
@@ -232,30 +235,6 @@ static BOOL IsInside(const BYTE *node, const BYTE *ancestor) {
         if (node == ancestor) return TRUE;
     }
     return FALSE;
-}
-
-// A bookmark's GURL keeps its spec in a string after the GUID. A folder has no URL.
-static BOOL IsFolder(const BYTE *node) {
-    for (DWORD offset = GuidOffset + 24; offset < GuidOffset + 0x100; offset += 8) {
-        const BYTE *field = node + offset;
-        const char *text = (const char *)field;
-        size_t size = field[23];
-        if (field[23] & 0x80) {
-            text = *(const char *const *)field;
-            size = *(const size_t *)(field + 8);
-            char head[16];
-            if (size < 8 || size > 1 << 20 || !SafeRead(text, head, sizeof head)) continue;
-            text = head;
-            size = sizeof head;
-            for (size_t i = 0; i + 3 <= size; i++)
-                if (!memcmp(text + i, "://", 3)) return FALSE;
-            continue;
-        }
-        if (size < 4 || size > 22) continue;
-        for (size_t i = 0; i + 3 <= size; i++)
-            if (!memcmp(text + i, "://", 3)) return FALSE;
-    }
-    return TRUE;
 }
 
 static const RECT *BoundsOf(const BYTE *view, RECT *out) {
@@ -433,12 +412,12 @@ static void AddContainer(BYTE *view) {
 // Containers aren't told they're gone, but a freed one no longer has this vtable.
 static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time) {
     (void)window, (void)message, (void)timer, (void)time;
+    MenuTick();
     if (!FolderCount) return;
     for (int i = 0; i < ContainerCount; i++) {
         Container *container = &Containers[i];
         void *vtable;
         if (!SafeRead(container->view, &vtable, sizeof vtable) || vtable != container->vtable) {
-            if (LastPaintedContainer == container->view) LastPaintedContainer = NULL;
             *container = Containers[--ContainerCount];
             i--;
             continue;
@@ -459,98 +438,64 @@ static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time)
     }
 }
 
-static BOOL FindRowAt(HWND window, POINT client, BYTE **foundRow, BYTE **foundContainer) {
-    double scale = GetDpiForWindow(window) / 96.0;
-    int x = (int)(client.x / scale), y = (int)(client.y / scale);
-    for (int attempt = 0; attempt < 2; attempt++) {
-        for (int i = 0; i < ContainerCount; i++) {
-            BYTE *container = Containers[i].view;
-            // With several windows the sidebars overlap in client coordinates, but moving
-            // the mouse onto a row repaints it, so the last container painted is the one.
-            if (attempt == 0 && container != LastPaintedContainer) continue;
-            int originX = 0, originY = 0;
-            for (BYTE *view = container; view; view = *(BYTE **)(view + ParentOffset)) {
-                RECT bounds;
-                BoundsOf(view, &bounds);
-                originX += bounds.left;
-                originY += bounds.top;
-            }
-            size_t count;
-            void **children = ChildrenOf(container, &count);
-            for (size_t j = 0; j < count; j++) {
-                BYTE *row = children[j];
-                if (!IsRow(row) || !IsVisible(row)) continue;
-                RECT bounds;
-                BoundsOf(row, &bounds);
-                POINT local = {x - originX, y - originY};
-                if (!PtInRect(&bounds, local)) continue;
-                *foundRow = row;
-                *foundContainer = container;
-                return TRUE;
-            }
-        }
-    }
-    return FALSE;
-}
-
-static char FlyoutGuid[GUID_SIZE];
+static char MenuGuid[GUID_SIZE];
 
 static void PickColor(int color) {
-    const Folder *folder = FindFolder(FlyoutGuid);
-    SetFolder(FlyoutGuid, color, folder ? folder->icon : -1);
-    RefreshRows(FlyoutGuid);
+    const Folder *folder = FindFolder(MenuGuid);
+    SetFolder(MenuGuid, color, folder ? folder->icon : -1);
+    RefreshRows(MenuGuid);
 }
 
-static void PickIcon(int icon) {
-    const Folder *folder = FindFolder(FlyoutGuid);
-    SetFolder(FlyoutGuid, folder ? folder->color : -1, icon);
-    RefreshRows(FlyoutGuid);
+static void PickIcon(const char *key, size_t size) {
+    for (int i = 0; i < Native.iconCount; i++) {
+        if (Icons[i].keySize != size || memcmp(Icons[i].key, key, size)) continue;
+        const Folder *folder = FindFolder(MenuGuid);
+        SetFolder(MenuGuid, folder ? folder->color : -1, i);
+        RefreshRows(MenuGuid);
+        return;
+    }
 }
 
 static void ResetFolder(void) {
-    SetFolder(FlyoutGuid, -1, -1);
-    RefreshRows(FlyoutGuid);
+    SetFolder(MenuGuid, -1, -1);
+    RefreshRows(MenuGuid);
 }
 
-static void OnRightClick(const MSG *message) {
-    if (!Learned) return;
-    POINT client = {GET_X_LPARAM(message->lParam), GET_Y_LPARAM(message->lParam)};
-    BYTE *row, *container;
-    if (!FindRowAt(message->hwnd, client, &row, &container)) return;
-    BYTE *node = NodeOf(row);
-    if (!node || !IsFolder(node)) return;
-    memcpy(FlyoutGuid, GuidOf(node), GUID_SIZE);
-    POINT screen = client;
-    ClientToScreen(message->hwnd, &screen);
-    const Folder *folder = FindFolder(FlyoutGuid);
-    FlyoutChoices choices = {
-        .colors = FolderColors,
-        .iconNames = IconNames,
-        .iconNameSizes = IconNameSizes,
-        .iconCount = min(Native.iconCount, MAX_ICONS),
+// A right click runs a callback the owner bound with itself as the receiver.
+static BYTE *OwnerOf(const BYTE *row) {
+    const BYTE *state = *(const BYTE *const *)(row + Native.rightClickOffset);
+    if (!state || *(void *const *)(state + 0x20) != Base + Native.rightClick) return NULL;
+    return *(BYTE *const *)(state + 0x30);
+}
+
+static BOOL RowMousePressed(void *view, const void *event) {
+    BYTE *row = view;
+    const BYTE *press = event;
+    BYTE *node = Learned ? NodeOf(row) : NULL;
+    BYTE *owner = node ? OwnerOf(row) : NULL;
+    if ((*(const DWORD *)(press + Native.eventFlagsOffset) & BUTTON_MASK) != RIGHT_BUTTON || !owner ||
+        !*(const int *)(node + Native.nodeTypeOffset) || node[Native.nodeManagedOffset])
+        return OriginalMousePressed(view, event);
+    const float *location = (const float *)(press + Native.eventLocationOffset);
+    POINT screen = {lroundf(location[0]), lroundf(location[1])};
+    ((ConvertToScreen)(Base + Native.convertToScreen))(row, &screen);
+    memcpy(MenuGuid, GuidOf(node), GUID_SIZE);
+    const Folder *folder = FindFolder(MenuGuid);
+    MenuChoices choices = {
         .color = folder ? folder->color : -1,
-        .icon = folder ? folder->icon : -1,
+        .icon = folder && folder->icon >= 0 ? &Icons[folder->icon] : NULL,
         .pickColor = PickColor,
         .pickIcon = PickIcon,
         .reset = ResetFolder,
     };
-    FlyoutShow(message->hwnd, screen, &choices);
-}
-
-static LRESULT CALLBACK OnMessage(int code, WPARAM removed, LPARAM param) {
-    if (code >= 0 && removed == PM_REMOVE) {
-        const MSG *message = (const MSG *)param;
-        if (message->message == WM_RBUTTONDOWN) FlyoutBeforeMenu();
-        if (message->message == WM_RBUTTONUP) OnRightClick(message);
-    }
-    return CallNextHookEx(NULL, code, removed, param);
+    MenuOpen(row, owner, node, screen, &choices);
+    return TRUE;
 }
 
 static void StartOnUiThread(void) {
     ((CreateRounded)(Base + Native.roundedBackground))(&Rounded, 1ull << 32, CORNER_RADIUS, 0);
     if (!Rounded) ModLog("couldn't create the block background");
     SetTimer(NULL, 0, TICK_MS, Tick);
-    SetWindowsHookExW(WH_GETMESSAGE, OnMessage, NULL, GetCurrentThreadId());
 }
 
 static void RowPaint(void *view, void *canvas) {
@@ -568,12 +513,12 @@ static void RowPaint(void *view, void *canvas) {
         ModLog("learned: parent +%#lx, children +%#lx, node +%#lx, guid +%#lx, node parent +%#lx",
                ParentOffset, ChildrenOffset, NodeOffset, GuidOffset, NodeParentOffset);
         Learned = TRUE;
+        MenuInit(&Native, Base, ChildrenOffset + 8);
         StartOnUiThread();
     }
     BYTE *parent = *(BYTE **)(row + ParentOffset);
     if (!parent) return;
     AddContainer(parent);
-    LastPaintedContainer = parent;
 }
 
 static void Start(const Lookup *lookup, BYTE *base) {
@@ -585,15 +530,12 @@ static void Start(const Lookup *lookup, BYTE *base) {
     Base = base;
     RowVtable = base + Native.rowVtable;
     Icons = (const IconEntry *)(base + Native.iconTable);
-    for (int i = 0; i < Native.iconCount && i < MAX_ICONS; i++) {
-        IconNames[i] = Icons[i].label;
-        IconNameSizes[i] = Icons[i].labelSize;
-    }
     LoadFolders();
     if (!SwapVtableEntry(RowVtable, Native.paintBackgroundSlot, RowPaint, (void **)&OriginalRowPaint)) {
         ModLog("couldn't hook the row");
         return;
     }
+    if (!SwapVtableEntry(RowVtable, Native.mousePressedSlot, RowMousePressed, (void **)&OriginalMousePressed)) ModLog("couldn't hook the row's clicks");
     ModLog("bookmark-folder-appearance ready: row vtable %#lx, paint slot %d, bounds +%#lx, %d folders stored",
            Native.rowVtable, Native.paintBackgroundSlot, Native.boundsOffset, FolderCount);
 }
