@@ -127,6 +127,8 @@ static ModPatch *AddPatchFolder(const wchar_t *folder, BOOL installed) {
         strcpy(patch->sha, sha);
         strcpy(patch->source, installed ? source : "built-in");
         wcscpy(patch->dll, path);
+        // Nothing has loaded yet on the first pass, so anything an update left behind can go.
+        if (installed && !patch->module) CleanOldBuilds(id, sha);
     }
     free(manifest);
     return patch;
@@ -452,6 +454,8 @@ void QueueSet(const char *id, BOOL enabled) {
 }
 
 void QueueInstall(const char *repo, const char *id, const char *sha) {
+    // What's there might be from the last time this patch was installed.
+    SaveInstallState(id, "running", "Starting");
     Job job = {.kind = JOB_INSTALL};
     snprintf(job.id, sizeof job.id, "%s", id);
     snprintf(job.repo, sizeof job.repo, "%s", repo);

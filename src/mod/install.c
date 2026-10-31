@@ -302,8 +302,11 @@ BOOL InstallPatch(const char *repo, const char *id, const char *sha, char *error
     SetEnvironmentVariableW(L"PATH", oldPath);
     free(commandLine);
     if (!ran || exitCode) {
+        // The whole of it is in compile.log. The first error is what fits on the page.
         char *log = ReadWholeFile(logPath, NULL);
-        snprintf(error, errorSize, "It didn't compile: %s", log ? log : "the compiler didn't run");
+        const char *first = log ? strstr(log, "error:") : NULL;
+        if (first) snprintf(error, errorSize, "It didn't compile: %.*s", (int)strcspn(first, "\r\n"), first);
+        else snprintf(error, errorSize, "It didn't compile. The compiler's output is in compile.log");
         free(log);
         return FALSE;
     }
