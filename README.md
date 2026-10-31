@@ -63,6 +63,10 @@ checked against the bytes in memory before anything is written.
 `tested` is only a record. It doesn't stop a patch from running on other builds, and
 `--scan` is how to see whether one still finds its code.
 
+Patches that need to run code inside Aside add `mod.c`, built into
+`build/aside-late-mod.dll`, and use `PATCH_IN_ASIDE`. Their log is
+`%LOCALAPPDATA%\AsideLate\mod.log`.
+
 ## How it works
 
 1. Start `Aside.exe` as a debugger and wait for the moment `Aside.dll` is mapped, before
@@ -85,6 +89,20 @@ checked against the bytes in memory before anything is written.
 1. Find `mov edx,<any>; xor dl,1; SetVisible` in a function that also has a
    `mov dl,1; SetVisible` call and loads Aside's extension ID.
 2. Require exactly one such function. Both calls now pass false.
+
+### bookmark-folder-appearance
+
+Right-click a bookmark folder to pick a color from a small strip beside Aside's own menu.
+The folder and its open contents get a rounded tint. Colors are kept by folder GUID in
+`%LOCALAPPDATA%\AsideLateolders.tsv`.
+
+- Classes are found by name: `VerticalBookmarkRowView` leads to its `MetaData()` function,
+  the vtable holding that, the constructor installing that vtable, and the primary vtable
+  it installs. Methods are swapped in the vtable, like swizzling.
+- `View::OnPaintBackground`'s slot comes from its trace string, voted on across every
+  vtable that uses it.
+- Object layouts are learned from the first row that paints, by shape: a parent lists the
+  row among its children, and a node holds a GUID and is listed by its parent.
 
 ## Limits
 
