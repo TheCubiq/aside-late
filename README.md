@@ -146,9 +146,13 @@ extension page whose files its browser process reads, so:
    the path it was opened as.
 2. Serve `main.html` from a copy with one extra `<script>` tag. The copy is made from
    whatever that version of the extension ships.
-3. Serve `/aside-late/` from `web` in the home folder.
+3. Serve `/aside-late/` from `web` in the home folder. Aside can have a file open at any
+   moment, and then it can't be replaced, so the files that change are written new each time
+   and `patches.json` leads to the newest.
 4. The script draws into the live page, copying a native navigation item and reusing the
    page's CSS classes. It uses none of the page's code, so it needs no per-build names.
+5. The switch is Aside's own rebuilt: the same parts, classes, spring and glass as its component.
+   The glass picture comes from a native switch on the page, and without one a press looks plainer.
 
 ### chats
 
