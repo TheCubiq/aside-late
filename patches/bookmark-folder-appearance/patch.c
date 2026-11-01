@@ -684,18 +684,9 @@ static void StyleClose(BYTE *row);
 // its nesting.
 static void RowPaint(void *view, void *canvas) {
     BYTE *row = view;
-    if (Learned) {
-        StyleRow(row);
-        StyleClose(row);
-    }
+    if (Learned) StyleRow(row);
     int depth = RowDepth(row), left = depth * LeftOffset, right = depth * RightOffset;
     int *bounds = (int *)(row + Native.boundsOffset), width = bounds[2];
-    // A drag doesn't lay the row out, and it can change the level it's at.
-    BYTE *layout = *(BYTE **)(row + Native.rowLayoutOffset);
-    if (row[Native.dragActiveOffset] && layout && *(int *)(layout + Native.insetLeftOffset) != Native.indentBase + left) {
-        void **rowVtable = *(void ***)row;
-        ((SizeChanged)rowVtable[Native.sizeChangedSlot])(row);
-    }
     // A folder's own hover is drawn with the row's, so for this long it isn't hovered.
     const BYTE *node = Learned ? NodeOf(row) : NULL, *owner = node ? OwnerOf(row) : NULL;
     BYTE hovered = row[Native.hoverOffset];
@@ -1513,6 +1504,22 @@ static void ReleaseHeldRebuilds(BOOL now) {
     if (wanted) ((Rebuild)(Base + Native.rebuild))(owner, RebuildAnimated && !now);
 }
 
+// What can add or remove a view's layer can't happen while it paints: the compositor is going through them all then, and
+// finding one gone takes the browser with it. So what a hover shows, and what a drag's level lays out, is seen to from here.
+static void TendRows(const BYTE *container) {
+    size_t count;
+    void **children = ChildrenOf(container, &count);
+    for (size_t i = 0; i < count; i++) {
+        BYTE *row = children[i];
+        if (!IsRow(row) || !NodeOf(row)) continue;
+        StyleClose(row);
+        BYTE *layout = *(BYTE **)(row + Native.rowLayoutOffset);
+        if (!row[Native.dragActiveOffset] || !layout || *(int *)(layout + Native.insetLeftOffset) == Native.indentBase + RowDepth(row) * LeftOffset) continue;
+        void **vtable = *(void ***)row;
+        ((SizeChanged)vtable[Native.sizeChangedSlot])(row);
+    }
+}
+
 // Rows move without their container repainting, and the blocks have to follow them.
 // Containers aren't told they're gone, but a freed one no longer has this vtable.
 static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time) {
@@ -1527,8 +1534,11 @@ static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time)
     if (HeldOwner) ReleaseHeldRebuilds(FALSE);
     AdvanceIndents();
     AdvanceGhosts(FALSE);
-    for (int i = 0; i < ContainerCount; i++)
-        if (ContainerIsLive(Containers[i].view)) PlaceHiddenRows(Containers[i].view);
+    for (int i = 0; i < ContainerCount; i++) {
+        if (!ContainerIsLive(Containers[i].view)) continue;
+        PlaceHiddenRows(Containers[i].view);
+        if (Learned) TendRows(Containers[i].view);
+    }
     BOOL moving = BlocksMoving;
     BlocksMoving = FALSE;
     for (int i = 0; i < ContainerCount; i++) {
