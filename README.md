@@ -214,6 +214,7 @@ Its options arrange every row, folder or not:
   bounds are nested for those two calls, and Aside draws them itself.
 - **Bottom offset** is extra margin on the last row inside a folder that has a backdrop. It's set
   before the container measures or lays out, so Aside's own animation heads for the right place.
+  **Gap below a folder** is more margin on that row, past the end of the outermost backdrop.
 - **Collapsed loaded nesting** builds on Aside keeping a loaded row, and every folder above it,
   when a folder folds. It hides those folders and indents the row one level under the folded one,
   moving its parts there gradually. Aside animates a row from wherever it last was, so a hidden row is
@@ -270,7 +271,27 @@ Nothing is stored per build:
 - **Colors** are Aside's theme colors, so they follow light and dark mode. A small switch
   maps each group color to its background ID, with the icon and title IDs just before it.
   `Background::Paint` shows how to resolve an ID, for the tint's own alpha.
-- **Reset** calls the row's own icon function, so a folder goes back to whatever Aside draws.
+- **Reset** calls the row's own icon function, so a folder goes back to whatever Aside draws. It's only
+  in the menu when there's something to reset.
+- **New folder** opens Chromium's bookmark editor, the one its bookmark bar uses for this. Its functions
+  are read in order after the metric that command records, `BookmarkBar_ContextMenu_NewFolder`.
+
+### sidebar-tweaks
+
+Aside's `aside_sidebar_hover_controller.cc` is a state machine. It asks a callback for the cursor and some
+rects, and works out from those whether a collapsed sidebar should show. The callback is an object holding
+a method, so looking for that method's address finds every window's, and swapping it changes the answers.
+Nothing here shows or hides anything.
+
+- **Stay open while a menu is open** holds the cursor over the panel while the browser's window owns another
+  window, which covers menus and their submenus. A menu also takes the focus, so the answer is what it was
+  when the window last had it. A browser losing focus hides the sidebar outright as well. That jump is
+  edited out, and the sidebar still closes on losing focus, because the controller is then told nothing.
+- **Reveal from the window's edge** answers that the cursor is over the button. Aside has its own strip at the
+  window's edge, but a maximized window starts past the edge of the screen, so that's where the strip is too.
+  This one starts where the window can be seen, and keeps the cursor out of Aside's.
+- **Delay on enter** holds that answer back. Asking only happens as the mouse moves, so a timer asks too.
+- **Delay on leave** moves the time the controller started closing from, so its own comparison comes out right.
 
 ## Limits
 
@@ -286,6 +307,8 @@ This is later binding than offsets, not real name lookup like Dia's Objective-C 
 - The icon picker shows names rather than the icons themselves.
 - A backdrop's height follows its own timing rather than Aside's animation, so it can be a few
   pixels from the rows beside it while they move. Its position is exact.
+- Windows swallows an exception in a timer callback, and a `CHECK` in Aside is one. A patch that calls Aside
+  from its timer can fail there with nothing in `mod.log` and no crash.
 - Only the X and the unload button animate an unload. A tab closed any other way goes as it does in Aside.
 - With **Ask before removing** off, the X on an unloaded bookmark deletes it at once, and nothing
   undoes that here.
