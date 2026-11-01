@@ -1162,6 +1162,9 @@ static void SetRowHidden(BYTE *row, BOOL hidden) {
         if (IsVisible(row)) {
             HoldGhost(row, TRUE);
             ((SetVisible)vtable[Native.setVisibleSlot])(row, FALSE);
+            // When it's back, its backdrop grows with it.
+            for (int i = 0; i < MotionCount; i++)
+                if (Motions[i].node == NodeOf(row)) Motions[i] = Motions[--MotionCount];
         }
     } else if (found >= 0) {
         HiddenRows[found] = HiddenRows[--HiddenCount];
@@ -1170,7 +1173,7 @@ static void SetRowHidden(BYTE *row, BOOL hidden) {
 }
 
 // Aside remembers where every row was, to animate it from there, and a hidden row has been nowhere since it was last
-// laid out, or ever. So it's kept where Aside would start a new row: at the bottom of the folder it's under, with no height.
+// laid out, or ever. So it's kept with no height just above the first row inside it, which it'll be above again.
 static void PlaceHiddenRows(const BYTE *container) {
     if (!HiddenCount) return;
     size_t count;
@@ -1180,19 +1183,18 @@ static void PlaceHiddenRows(const BYTE *container) {
         if (!IsRow(row) || IsVisible(row) || !NodeOf(row)) continue;
         BOOL hidden = FALSE;
         for (int j = 0; j < HiddenCount && !hidden; j++) hidden = HiddenRows[j] == row;
-        int levels = hidden ? LevelsToFolded(row) : 0;
-        if (!levels) continue;
-        const BYTE *up = NodeOf(row);
-        while (levels-- && up) up = NodeParent(up);
-        const BYTE *folder = up ? FindRowOf(container, up) : NULL;
-        if (!folder) continue;
+        if (!hidden) continue;
+        const BYTE *inside = NULL;
+        for (size_t j = i + 1; j < count && !inside; j++)
+            if (IsRow(children[j]) && IsVisible(children[j]) && NodeOf(children[j]) && IsInside(NodeOf(children[j]), NodeOf(row))) inside = children[j];
+        if (!inside) continue;
         RECT now, end;
         BOOL moving = BlocksMoving;
-        RowPlace(folder, &now, &end);
+        RowPlace(inside, &now, &end);
         BlocksMoving = moving;
         int *bounds = (int *)(row + Native.boundsOffset);
         bounds[0] = end.left;
-        bounds[1] = end.bottom;
+        bounds[1] = end.top;
         bounds[2] = end.right - end.left;
         bounds[3] = 0;
     }
