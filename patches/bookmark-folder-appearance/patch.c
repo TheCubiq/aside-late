@@ -1527,6 +1527,8 @@ static void RowBackground(void *view, void *canvas) {
         ModLog("learned: parent +%#lx, children +%#lx, node +%#lx, guid +%#lx, node parent +%#lx",
                ParentOffset, ChildrenOffset, NodeOffset, GuidOffset, NodeParentOffset);
         Learned = TRUE;
+        // Aside keeps the height it measured when it built these rows, which was before any of them had their margins.
+        RebuildWanted = TRUE;
         MenuInit(&Native, Base, ChildrenOffset + 8);
     }
     StartOnUiThread();
