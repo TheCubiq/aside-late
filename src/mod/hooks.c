@@ -2,6 +2,8 @@
 
 #include "internal.h"
 
+#include <tlhelp32.h>
+
 #define MAX_HOOKS 4096
 #define MAX_EDITS 256
 #define MAX_EDIT_SIZE 64
@@ -210,12 +212,37 @@ static LRESULT CALLBACK OnUiMessage(int code, WPARAM wparam, LPARAM lparam) {
     return CallNextHookEx(NULL, code, wparam, lparam);
 }
 
-static DWORD FindUiThread(void) {
-    HWND window = NULL;
-    while ((window = FindWindowExW(HWND_MESSAGE, window, L"Chrome_MessageWindow", NULL))) {
-        DWORD pid = 0, thread = GetWindowThreadProcessId(window, &pid);
-        if (pid == GetCurrentProcessId()) return thread;
+// The browser's UI thread is the process's first.
+static DWORD FindFirstThread(void) {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return 0;
+    THREADENTRY32 entry = {.dwSize = sizeof entry};
+    ULONGLONG earliest = ~0ull;
+    DWORD first = 0;
+    for (BOOL more = Thread32First(snapshot, &entry); more; more = Thread32Next(snapshot, &entry)) {
+        if (entry.th32OwnerProcessID != GetCurrentProcessId()) continue;
+        HANDLE thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ThreadID);
+        FILETIME created, exited, kernel, user;
+        if (thread && GetThreadTimes(thread, &created, &exited, &kernel, &user)) {
+            ULONGLONG time = (ULONGLONG)created.dwHighDateTime << 32 | created.dwLowDateTime;
+            if (time < earliest) {
+                earliest = time;
+                first = entry.th32ThreadID;
+            }
+        }
+        if (thread) CloseHandle(thread);
     }
+    CloseHandle(snapshot);
+    return first;
+}
+
+// It's ready once it has a message window. Other threads have those too, such as the one capturing video, and a view
+// touched from one of those stops the browser.
+static DWORD FindUiThread(void) {
+    DWORD first = FindFirstThread();
+    HWND window = NULL;
+    while (first && (window = FindWindowExW(HWND_MESSAGE, window, L"Chrome_MessageWindow", NULL)))
+        if (GetWindowThreadProcessId(window, NULL) == first) return first;
     return 0;
 }
 
