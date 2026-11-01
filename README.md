@@ -215,7 +215,11 @@ Its options arrange every row, folder or not:
 - **Bottom offset** is extra margin on the last row inside a folder that has a backdrop. It's set
   before the container measures or lays out, so Aside's own animation heads for the right place.
 - **Collapsed loaded nesting** builds on Aside keeping a loaded row, and every folder above it,
-  when a folder folds. It hides those folders and indents the row one level under the folded one.
+  when a folder folds. It hides those folders and indents the row one level under the folded one,
+  moving its parts there gradually. A hidden row is kept at the bottom of that folder with no
+  height, which is where Aside starts a new row, because Aside animates a row from wherever it last was.
+- **Selected tab first when collapsed** is what Aside does on its own: a folded folder lists its
+  active tab first, and then the last one it was. Off, a jump over that code leaves bookmark order.
 - **A dragged row** takes the nesting of the row after the spot it's over, and the top level
   below the last row.
 - **The caret** is moved with `View::SetBoundsRect` once the row has laid itself out. Its paint
@@ -226,7 +230,13 @@ Its options arrange every row, folder or not:
   bounds at the end, so a backdrop's position comes from each row's record in Aside's animator.
   Aside removes a folded folder's rows at once, so its height eases on its own along about the
   same curve. A dragged folder's backdrop moves by the row's drag offset.
-- **A folder's hover highlight** is off by default, by not counting it as hovered while it paints.
+- **A folding folder's rows** are ones Aside deletes at the end of its rebuild, or folders that
+  **Collapsed loaded nesting** just hid. The row's deleting destructor holds on to the first kind when
+  a rebuild called it, and the container paints the icon, title and caret of both, clipped to what
+  hasn't folded away yet and fading, then deletes the first kind. It doesn't paint the row itself,
+  because something in a row's paint clears the canvas, which would take the container's with it.
+- **A folder's hover highlight** can be never, only while it's collapsed, or always, by not counting
+  it as hovered while it paints.
 - **A bookmark's X** is the button Aside shows on a loaded bookmark. Showing it on one that isn't
   loaded makes it delete, through Aside's own "Delete this bookmark?" dialog, or straight to that
   dialog's answer with **Ask before removing** off. On a loaded bookmark it can be a minus, and
