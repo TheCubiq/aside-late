@@ -1,5 +1,5 @@
-// Colors bookmark folders and changes their icons, and lets the caret and the tint be arranged. Aside's classes and
-// methods are bound by name in resolve.c, and the shape of its objects is learned here from the first row that paints.
+// Colors bookmark folders and changes their icons, and arranges rows: their nesting, carets and close buttons. Aside's
+// classes and methods are bound by name in resolve.c, and the shape of its objects is learned from the first row that paints.
 
 #include "resolve.h"
 
@@ -11,7 +11,12 @@
 #define MAX_CONTAINERS 32
 #define MAX_ROWS 4096
 #define GUID_SIZE 36
-#define MAX_ROTATED 256
+#define MAX_CLOSE_BUTTONS 256
+#define BUTTON_STATES 3
+#define CLOSE_ICON_SIZE 16
+#define PLAIN_ALPHA 0x1a000000u
+#define PRESS_METHOD 0x20
+#define PRESS_RECEIVER 0x30
 #define CORNER_RADIUS 8.0f
 #define TICK_MS 16
 #define SCAN_LIMIT 0x700
@@ -35,22 +40,31 @@ typedef struct {
 
 typedef enum { CARET_RIGHT, CARET_BEFORE_ICON, CARET_BEFORE_NAME, CARET_AFTER_NAME } CaretPosition;
 
-// gfx::VectorIcon, whose path is a list of 32-bit commands and floats.
-typedef struct {
-    const DWORD *path;
-    size_t size;
-} IconRep;
-
-typedef struct {
-    const IconRep *reps;
-    size_t count;
-    const char *name;
-} VectorIcon;
-
 typedef struct {
     int width, height;
 } ViewSize;
 
+typedef struct {
+    int x, y, width, height;
+} ViewRect;
+
+// Which icon a close button has been given, if not its own.
+typedef struct {
+    BYTE *button;
+    const void *icon;
+    DWORD color;
+} CloseButton;
+
+typedef void (*DeleteAccepted)(void *state, int result);
+typedef void (*SetViewBounds)(void *view, const ViewRect *rect);
+typedef void (*RowFunction)(void *row);
+typedef void (*Layout)(void *view, void *key);
+typedef void (*SetVisible)(void *view, BOOL visible);
+typedef void (*SetButtonImage)(void *button, int state, void *image);
+typedef void (*ClosePress)(void *row, void *a, void *b, void *c);
+typedef int (*CanvasSave)(void *canvas);
+typedef void (*CanvasRestore)(void *canvas);
+typedef void (*CanvasConcat)(void *canvas, const float *matrix);
 typedef void (*CalculateSize)(const void *view, ViewSize *size, const void *bounds);
 typedef void (*SizeChanged)(void *view);
 typedef void (*CreateRounded)(void **result, ULONGLONG color, float radius, int inset);
@@ -71,12 +85,15 @@ typedef DWORD (*GetColor)(void *provider, DWORD id);
 static Bindings Native;
 static BYTE *Base;
 static void *RowVtable;
-static PaintBackground OriginalRowPaint, OriginalContainerPaint;
+static PaintBackground OriginalRowPaint, OriginalRowBackground, OriginalContainerPaint, OriginalContainerOnPaint, OriginalCaretPaint;
+static Layout OriginalRowLayout;
+static ClosePress OriginalClosePress;
 static MousePressed OriginalMousePressed;
 
 // Learned from live objects.
 static DWORD ParentOffset, ChildrenOffset, NodeOffset, GuidOffset, NodeParentOffset;
 static DWORD ImageIconOffset, ImageColorOffset;
+static DWORD ClosePressOffset;
 static BOOL Learned;
 static int LearnAttempts;
 
@@ -84,6 +101,7 @@ static Folder Folders[MAX_FOLDERS];
 static int FolderCount;
 static char StorePath[MAX_PATH];
 
+static BOOL RowsNarrowed;
 static Container Containers[MAX_CONTAINERS];
 static int ContainerCount;
 static void *Rounded;
@@ -92,15 +110,18 @@ static UINT_PTR Timer;
 static const IconEntry *Icons;
 
 // The patch's options.
-static BOOL CaretShown = TRUE, BackdropShown = TRUE;
+static BOOL CaretShown = TRUE, CaretFlipped, BackdropShown = TRUE, BackdropTinted = TRUE;
+static BOOL CloseRemoves, CloseIsMinus;
 static CaretPosition Position;
-static int ClosedAngle, OpenAngle;
+static int ClosedAngle, OpenAngle = 180;
 static int LeftOffset = 14, RightOffset = 6;
 static BOOL Enabled;
 
-// The gaps Aside leaves around the title, from a row as it laid it out.
-static int IconGap, CaretGap, CaretWidth;
-static BOOL LearnedGaps;
+static BYTE *DeleteOwner;
+static LONGLONG DeleteNodeId;
+static CloseButton CloseButtons[MAX_CLOSE_BUTTONS];
+static int CloseButtonCount;
+
 // Folders store Aside's group colors, the same values its menu's buttons use.
 static BOOL IsGroupColor(int color) {
     return color >= 0 && color < GROUP_COLOR_COUNT && Native.groupBackgrounds[color];
@@ -268,12 +289,6 @@ static const char *GuidOf(const BYTE *node) {
     return *(const char *const *)(node + GuidOffset);
 }
 
-static int DepthOf(const BYTE *node) {
-    int depth = 0;
-    while ((node = NodeParent(node)) && depth < 64) depth++;
-    return depth;
-}
-
 static BOOL IsInside(const BYTE *node, const BYTE *ancestor) {
     for (int depth = 0; node && depth < 64; depth++) {
         node = NodeParent(node);
@@ -334,68 +349,6 @@ static void LearnImageShape(const BYTE *view, const void *icon, ULONGLONG color)
     ModLog("couldn't learn the image view's shape");
 }
 
-// A path's commands are small numbers and its coordinates are floats, so a command's arguments can be told
-// apart in any build. Arguments in pairs are x,y. A lone one is a horizontal or vertical line, whose direction
-// only doesn't matter for a half turn. NULL if the path has anything else, or isn't all absolute coordinates.
-static const VectorIcon *RotateIcon(const VectorIcon *icon, int angle) {
-    IconRep *reps = malloc(icon->count * sizeof *reps);
-    VectorIcon *rotated = malloc(sizeof *rotated);
-    for (size_t i = 0; i < icon->count; i++) {
-        const DWORD *path = icon->reps[i].path;
-        size_t size = icon->reps[i].size;
-        if (size < 2 || !path[0] || path[0] >= 64) return NULL;
-        DWORD *copy = malloc(size * sizeof *copy);
-        memcpy(copy, path, size * sizeof *copy);
-        float canvas = *(const float *)&path[1];
-        for (size_t at = 2; at < size;) {
-            if (path[at] && path[at] < 64) {
-                at++;
-                continue;
-            }
-            size_t count = 0;
-            while (at + count < size && (!path[at + count] || path[at + count] >= 64)) count++;
-            if (count % 2 && !(count == 1 && angle == 180)) return NULL;
-            for (size_t j = 0; j < count; j++) {
-                float value = *(const float *)&path[at + j];
-                if (value < 0 || value > canvas) return NULL;
-            }
-            if (count == 1) {
-                float value = canvas - *(const float *)&path[at];
-                memcpy(&copy[at], &value, sizeof value);
-            }
-            for (size_t j = 0; count > 1 && j < count; j += 2) {
-                float x = *(const float *)&path[at + j], y = *(const float *)&path[at + j + 1];
-                float newX = angle == 90 ? canvas - y : angle == 180 ? canvas - x : y;
-                float newY = angle == 90 ? x : angle == 180 ? canvas - y : canvas - x;
-                memcpy(&copy[at + j], &newX, sizeof newX);
-                memcpy(&copy[at + j + 1], &newY, sizeof newY);
-            }
-            at += count;
-        }
-        reps[i] = (IconRep){copy, size};
-    }
-    *rotated = (VectorIcon){reps, icon->count, icon->name};
-    return rotated;
-}
-
-// An icon at an angle, kept for good. One that can't be rotated stays as it is.
-static const void *Rotated(const void *icon, int angle) {
-    static struct {
-        const void *icon, *result;
-        int angle;
-    } kept[MAX_ROTATED];
-    static int count;
-    angle = ((angle % 360) + 360) % 360;
-    if (!angle) return icon;
-    for (int i = 0; i < count; i++)
-        if (kept[i].icon == icon && kept[i].angle == angle) return kept[i].result;
-    if (count == MAX_ROTATED) return icon;
-    const void *result = RotateIcon(icon, angle);
-    if (!result) ModLog("couldn't rotate the icon named %s", ((const VectorIcon *)icon)->name);
-    kept[count++] = (typeof(kept[0])){icon, result ? result : icon, angle};
-    return kept[count - 1].result;
-}
-
 static BOOL ImageIsCurrent(const BYTE *view, const void *icon, ULONGLONG color) {
     return *(const void *const *)(view + ImageIconOffset) == icon && *(const ULONGLONG *)(view + ImageColorOffset) == color;
 }
@@ -407,83 +360,206 @@ static void SetRowTitleColor(const BYTE *row, ULONGLONG color) {
     ((SetTitleColor)vtable[Native.setTitleColorOffset / 8])(title, color);
 }
 
-static BOOL IsOpen(void **children, size_t count, size_t index, RECT *bottom);
-
-static BOOL RowIsOpen(const BYTE *row) {
-    BYTE *parent = *(BYTE **)(row + ParentOffset);
-    if (!parent) return FALSE;
-    size_t count;
-    void **children = ChildrenOf(parent, &count);
-    for (size_t i = 0; i < count; i++)
-        if (children[i] == row) return IsOpen(children, count, i, NULL);
-    return FALSE;
-}
-
 // Runs on every paint, so it only touches what's out of date. Setting an image repaints.
-//
-// The icon view has a layer of its own and can't be moved by moving its bounds, so a caret before the icon is the
-// two views swapping what they show. The caret view turns whatever it shows a half turn when a folder is open, so
-// anything it's given is turned the other way first.
 static void StyleRow(BYTE *row) {
     BYTE *node = NodeOf(row);
-    if (!node || !*(const int *)(node + Native.nodeTypeOffset)) return;
+    const Folder *folder = node ? FindFolder(GuidOf(node)) : NULL;
+    if (!folder) return;
+    // Icons are themed like Aside's own until the folder has a color.
+    ULONGLONG color = folder->color >= 0 ? IconColor(folder->color) : Native.themedColorId - row[Native.selectedOffset];
+    const void *glyph = folder->icon >= 0 ? Icons[folder->icon].icon : Base + Native.folderIcon;
+    const void *caretGlyph = Base + Native.caretIcon;
     BYTE *leading = *(BYTE **)(row + Native.leadingOffset), *caret = *(BYTE **)(row + Native.caretOffset);
     if (!leading) return;
-    const Folder *folder = FindFolder(GuidOf(node));
-    // Icons are themed like Aside's own until the folder has a color.
-    ULONGLONG color = folder && folder->color >= 0 ? IconColor(folder->color) : Native.themedColorId - row[Native.selectedOffset];
-    const void *icon = folder && folder->icon >= 0 ? Icons[folder->icon].icon : Base + Native.folderIcon;
-    const void *native = Base + Native.caretIcon;
-    BOOL open = RowIsOpen(row), swapped = CaretShown && Position == CARET_BEFORE_ICON;
-    int angle = open ? OpenAngle : ClosedAngle, turn = open ? 180 : 0;
-    const void *first = swapped ? Rotated(native, angle) : icon;
-    const void *second = swapped ? Rotated(icon, turn) : Rotated(native, angle + turn);
-    if (!ImageIconOffset || !ImageIsCurrent(leading, first, color)) {
-        SetImageView(leading, first, color);
-        if (!ImageIconOffset) LearnImageShape(leading, first, color);
-        if (folder && folder->color >= 0) SetRowTitleColor(row, TitleColor(folder->color));
-    }
-    if (caret && !ImageIsCurrent(caret, second, color)) SetImageView(caret, second, color);
+    if (ImageIconOffset && ImageIsCurrent(leading, glyph, color) && (!caret || ImageIsCurrent(caret, caretGlyph, color))) return;
+    SetImageView(leading, glyph, color);
+    if (!ImageIconOffset) LearnImageShape(leading, glyph, color);
+    if (caret) SetImageView(caret, caretGlyph, color);
+    if (folder->color >= 0) SetRowTitleColor(row, TitleColor(folder->color));
 }
 
-// Moves a view without telling it, which is all painting needs. A row laying itself out again puts its children
-// back and repaints what it moved, and the next paint moves them again. That also makes the title elide its text again.
-static void PlaceView(BYTE *view, int x, int width) {
-    int *bounds = (int *)(view + Native.boundsOffset);
-    bounds[0] = x;
-    bounds[2] = width;
+// How far in a row's nesting puts it. A collapsed sidebar shows no nesting.
+static int RowDepth(const BYTE *row) {
+    return row[Native.collapsedOffset] ? 0 : *(const int *)(row + Native.depthOffset);
 }
 
-// Runs before the row's children paint, so they're drawn where they end up. The row's own edges stay wherever
-// Aside put them, which also means this can run again on a row it already moved.
+static void SetBounds(BYTE *view, int x, int width) {
+    const int *bounds = (const int *)(view + Native.boundsOffset);
+    ViewRect rect = {x, bounds[1], width, bounds[3]};
+    if (bounds[0] != x || bounds[2] != width) ((SetViewBounds)(Base + Native.setBoundsRect))(view, &rect);
+}
+
+// Rearranges what Aside just laid out, keeping the gaps it left.
 static void PlaceCaret(BYTE *row) {
     BYTE *leading = *(BYTE **)(row + Native.leadingOffset), *caret = *(BYTE **)(row + Native.caretOffset), *title = *(BYTE **)(row + Native.titleOffset);
-    if (!leading || !caret || !title || !IsVisible(caret)) return;
+    if (!leading || !caret || !title || !IsVisible(caret) || (CaretShown && Position == CARET_RIGHT)) return;
     const int *icon = (const int *)(leading + Native.boundsOffset), *name = (const int *)(title + Native.boundsOffset), *mark = (const int *)(caret + Native.boundsOffset);
-    if (!LearnedGaps) {
-        if (icon[2] <= 0 || name[2] <= 0 || mark[2] <= 0) return;
-        IconGap = name[0] - (icon[0] + icon[2]);
-        CaretGap = mark[0] - (name[0] + name[2]);
-        CaretWidth = mark[2];
-        LearnedGaps = TRUE;
-    }
-    if (CaretShown && Position == CARET_RIGHT) return;
-    int end = max(name[0] + name[2], mark[0] + mark[2]);
-    int nameX = icon[0] + icon[2] + IconGap, caretX, nameEnd = end;
+    int start = icon[0], iconWidth = icon[2], caretWidth = mark[2];
+    int iconGap = name[0] - (start + iconWidth), caretGap = mark[0] - (name[0] + name[2]), end = mark[0] + caretWidth;
+    int iconX = start, nameX = start + iconWidth + iconGap, caretX, nameEnd = end;
     if (!CaretShown) {
         caretX = end;
-    } else if (Position == CARET_AFTER_NAME) {
+        caretWidth = 0;
+    } else if (Position == CARET_BEFORE_ICON) {
+        caretX = start;
+        iconX = start + caretWidth + iconGap;
+        nameX = iconX + iconWidth + iconGap;
+    } else if (Position == CARET_BEFORE_NAME) {
+        caretX = nameX;
+        nameX = caretX + caretWidth + iconGap;
+    } else {
         ViewSize size = {0};
         void **vtable = *(void ***)title;
         ((CalculateSize)vtable[Native.calculateSizeSlot])(title, &size, Base + Native.unboundedSize);
-        nameEnd = min(nameX + size.width, end - CaretWidth - CaretGap);
-        caretX = nameEnd + CaretGap;
-    } else {
-        caretX = nameX;
-        nameX = caretX + CaretWidth + IconGap;
+        nameEnd = min(nameX + size.width, end - caretWidth - caretGap);
+        caretX = nameEnd + caretGap;
     }
-    PlaceView(title, nameX, max(nameEnd - nameX, 0));
-    PlaceView(caret, caretX, CaretShown ? CaretWidth : 0);
+    SetBounds(leading, iconX, iconWidth);
+    SetBounds(title, nameX, max(nameEnd - nameX, 0));
+    SetBounds(caret, caretX, caretWidth);
+}
+
+// Aside lays a row out from the left inset of its layout and its width, and places the close button from that width too.
+static void RowLayout(void *view, void *key) {
+    BYTE *row = view;
+    BYTE *layout = *(BYTE **)(row + Native.rowLayoutOffset);
+    int depth = RowDepth(row);
+    int *bounds = (int *)(row + Native.boundsOffset), width = bounds[2], right = depth * RightOffset;
+    if (layout && !row[Native.collapsedOffset]) *(int *)(layout + Native.insetLeftOffset) = Native.indentBase + depth * LeftOffset;
+    if (width > right) bounds[2] = width - right;
+    OriginalRowLayout(view, key);
+    bounds[2] = width;
+    PlaceCaret(row);
+}
+
+// The caret turns by a share of a half turn that Aside animates. Giving it another share while it paints is all an
+// angle takes: its own animation then runs between any two, in either direction.
+static void CaretPaint(void *view, void *canvas) {
+    BYTE *caret = view;
+    double *progress = (double *)(caret + Native.caretProgressOffset), share = *progress;
+    if (Learned && IsRow(*(BYTE **)(caret + ParentOffset))) {
+        int turn = (((OpenAngle - ClosedAngle) % 360) + 360) % 360;
+        if (CaretFlipped && turn) turn -= 360;
+        *progress = (ClosedAngle + share * turn) / Native.turnDegrees;
+    }
+    OriginalCaretPaint(view, canvas);
+    *progress = share;
+}
+
+static void StyleRow(BYTE *row);
+static void StyleClose(BYTE *row);
+
+// A row paints its highlight and outline across its whole width. So for that long it's as wide, and as far along, as
+// its nesting.
+static void RowPaint(void *view, void *canvas) {
+    BYTE *row = view;
+    if (Learned) {
+        StyleRow(row);
+        StyleClose(row);
+    }
+    int depth = RowDepth(row), left = depth * LeftOffset, right = depth * RightOffset;
+    int *bounds = (int *)(row + Native.boundsOffset), width = bounds[2];
+    if ((!left && !right) || width <= left + right) {
+        OriginalRowPaint(view, canvas);
+        return;
+    }
+    void *paint = *(void **)((BYTE *)canvas + Native.canvasPaintOffset);
+    void **vtable = *(void ***)paint;
+    // An SkM44, by columns.
+    const float move[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, (float)left, 0, 0, 1};
+    ((CanvasSave)vtable[Native.canvasSaveSlot])(paint);
+    ((CanvasConcat)vtable[Native.canvasConcatSlot])(paint, move);
+    bounds[2] = width - left - right;
+    OriginalRowPaint(view, canvas);
+    bounds[2] = width;
+    ((CanvasRestore)vtable[Native.canvasRestoreSlot])(paint);
+}
+
+static BYTE *OwnerOf(const BYTE *row);
+
+// Answers Aside's "Delete this bookmark?" without asking it. The answer's state holds a weak flag, which it releases.
+static void DeleteBookmark(void) {
+    struct {
+        LONG references;
+        BYTE invalid;
+    } flag = {2, 0};
+    BYTE state[0x40] = {0};
+    *(void **)(state + 0x28) = &flag;
+    *(BYTE **)(state + 0x30) = DeleteOwner;
+    *(LONGLONG *)(state + 0x38) = DeleteNodeId;
+    DeleteOwner = NULL;
+    ((DeleteAccepted)(Base + Native.deleteAccepted))(state, 1);
+}
+
+// What a close button runs. On a bookmark that isn't loaded there's no tab to close, so it deletes the bookmark. That
+// destroys the row and this button, so it waits until the button's press is over.
+static void ClosePressed(void *view, void *a, void *b, void *c) {
+    BYTE *row = view;
+    BYTE *node = NodeOf(row), *owner = OwnerOf(row);
+    if (Enabled && CloseRemoves && !row[Native.loadedOffset] && node && owner && !node[Native.nodeManagedOffset]) {
+        DeleteOwner = owner;
+        DeleteNodeId = *(const LONGLONG *)(node + Native.nodeIdOffset);
+    } else {
+        OriginalClosePress(view, a, b, c);
+    }
+}
+
+// The button keeps a bound callback that holds a method and the row it runs on.
+static void TakeClosePress(BYTE *row, BYTE *close) {
+    for (DWORD offset = ClosePressOffset ? ClosePressOffset : 0x1d0; offset < (ClosePressOffset ? ClosePressOffset + 1 : 0x658); offset += 8) {
+        BYTE *state;
+        void *method, *receiver;
+        if (!SafeRead(close + offset, &state, sizeof state) || !state) continue;
+        if (!SafeRead(state + PRESS_RECEIVER, &receiver, sizeof receiver) || receiver != row) continue;
+        if (!SafeRead(state + PRESS_METHOD, &method, sizeof method)) continue;
+        if (method == ClosePressed) return;
+        if (!IsInAside(method)) continue;
+        ClosePressOffset = offset;
+        OriginalClosePress = method;
+            *(void **)(state + PRESS_METHOD) = ClosePressed;
+        return;
+    }
+}
+
+static void SetCloseIcon(BYTE *close, const void *icon, DWORD color) {
+    void **vtable = *(void ***)close;
+    for (int state = 0; state < BUTTON_STATES; state++) {
+        BYTE image[64] = {0};
+        ((CreateImage)(Base + Native.createImage))(image, icon, (1ull << 32) | color, CLOSE_ICON_SIZE, NULL);
+        image[40] = 1;  // optional<ImageModel>'s engaged flag.
+        ((SetButtonImage)vtable[Native.closeSetImageSlot])(close, state, image);
+        ((DestroyImage)(Base + Native.destroyImage))(image);
+    }
+}
+
+// Aside only shows the button on a loaded bookmark, and hides it again when the hover ends either way.
+static void StyleClose(BYTE *row) {
+    BYTE *node = NodeOf(row), *close = *(BYTE **)(row + Native.closeOffset);
+    if (!node || !close || *(const int *)(node + Native.nodeTypeOffset) || !row[Native.hoverOffset]) return;
+    BOOL loaded = row[Native.loadedOffset];
+    if (CloseRemoves && !loaded && !IsVisible(close)) {
+        void **vtable = *(void ***)close;
+        ((SetVisible)vtable[Native.setVisibleSlot])(close, TRUE);
+    }
+    if (CloseRemoves) TakeClosePress(row, close);
+
+    const void *icon = CloseIsMinus && loaded && Native.minusIcon ? Base + Native.minusIcon : NULL;
+    DWORD color = *(const DWORD *)(close + Native.closeColorOffset);
+    CloseButton *entry = NULL;
+    for (int i = 0; i < CloseButtonCount && !entry; i++)
+        if (CloseButtons[i].button == close) entry = &CloseButtons[i];
+    if (!entry && !icon) return;
+    if (!entry) {
+        if (CloseButtonCount == MAX_CLOSE_BUTTONS) CloseButtonCount = 0;
+        entry = &CloseButtons[CloseButtonCount++];
+        *entry = (CloseButton){close, NULL, color};
+    }
+    // Aside sets the icon again whenever the button's color changes.
+    if (entry->icon == icon && entry->color == color) return;
+    if (icon) SetCloseIcon(close, icon, color);
+    else ((RowFunction)(Base + Native.closeUpdateImage))(close);
+    entry->icon = icon;
+    entry->color = color;
 }
 
 // Back to exactly what Aside would draw, using its own function and its own color.
@@ -515,8 +591,9 @@ static BOOL ResolveTint(BYTE *view, int color, BOOL expanded, DWORD *argb) {
     void **themeVtable = *(void ***)theme;
     void *provider = ((GetColorProvider)themeVtable[Native.themeProviderOffset / 8])(theme);
     if (!provider) return FALSE;
-    DWORD resolved = ((GetColor)(Base + Native.getColor))(provider, Native.groupBackgrounds[color]);
-    *argb = (resolved & 0xffffff) | (expanded ? EXPANDED_ALPHA : COLLAPSED_ALPHA);
+    // Plain is the theme's own text color, which is what contrasts in both light and dark mode.
+    DWORD resolved = ((GetColor)(Base + Native.getColor))(provider, BackdropTinted ? Native.groupBackgrounds[color] : Native.titleColorId);
+    *argb = (resolved & 0xffffff) | (BackdropTinted ? (expanded ? EXPANDED_ALPHA : COLLAPSED_ALPHA) : PLAIN_ALPHA);
     return TRUE;
 }
 
@@ -555,30 +632,48 @@ static void PaintFolders(BYTE *container, void *canvas) {
     if (!Rounded || !FolderCount || !BackdropShown) return;
     size_t count;
     void **children = ChildrenOf(container, &count);
-    int baseDepth = 1 << 30;
-    for (size_t i = 0; i < count; i++) {
-        BYTE *row = children[i];
-        if (!IsRow(row) || !NodeOf(row)) continue;
-        baseDepth = min(baseDepth, DepthOf(NodeOf(row)));
-    }
     for (size_t i = 0; i < count; i++) {
         BYTE *row = children[i];
         if (!IsRow(row) || !IsVisible(row) || !NodeOf(row)) continue;
-        BYTE *node = NodeOf(row);
-        int color = FindColor(GuidOf(node));
+        int color = FindColor(GuidOf(NodeOf(row)));
         // Like Aside's neutral groups, which have no fill of their own.
         if (color < 0 || color == NEUTRAL_COLOR) continue;
         RECT block;
         BoundsOf(row, &block);
         if (block.bottom <= block.top) continue;
         BOOL expanded = IsOpen(children, count, i, &block);
-        PaintBlock(container, canvas, &block, (DepthOf(node) - baseDepth) * LeftOffset, DepthOf(node) > baseDepth ? RightOffset : 0, color, expanded);
+        // Rows can already be as narrow as their nesting here, if this is inside the container's own paint.
+        int depth = RowsNarrowed ? 0 : RowDepth(row);
+        PaintBlock(container, canvas, &block, depth * LeftOffset, depth * RightOffset, color, expanded);
     }
 }
 
 static void ContainerPaint(void *view, void *canvas) {
     OriginalContainerPaint(view, canvas);
     PaintFolders(view, canvas);
+}
+
+// The container draws the outline of a selected or dragged row itself, around that row's bounds. Children paint after
+// this returns, so for this long each row can simply be where its nesting puts it.
+static void NarrowRows(BYTE *container, int sign) {
+    size_t count;
+    void **children = ChildrenOf(container, &count);
+    for (size_t i = 0; i < count; i++) {
+        BYTE *row = children[i];
+        if (!IsRow(row)) continue;
+        int depth = RowDepth(row), left = depth * LeftOffset, right = depth * RightOffset;
+        int *bounds = (int *)(row + Native.boundsOffset);
+        bounds[0] += sign * left;
+        bounds[2] -= sign * (left + right);
+    }
+}
+
+static void ContainerOnPaint(void *view, void *canvas) {
+    NarrowRows(view, 1);
+    RowsNarrowed = TRUE;
+    OriginalContainerOnPaint(view, canvas);
+    RowsNarrowed = FALSE;
+    NarrowRows(view, -1);
 }
 
 static void AddContainer(BYTE *view) {
@@ -590,6 +685,7 @@ static void AddContainer(BYTE *view) {
         ModLog("couldn't hook the rows container");
         return;
     }
+    if (!HookVtable(vtable, Native.caretPaintSlot, ContainerOnPaint, (void **)&OriginalContainerOnPaint)) ModLog("couldn't hook the rows container's paint");
     Containers[ContainerCount++] = (Container){.view = view, .vtable = vtable};
     ModLog("rows container %p", view);
     Repaint(view);
@@ -600,7 +696,8 @@ static void AddContainer(BYTE *view) {
 static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time) {
     (void)window, (void)message, (void)timer, (void)time;
     MenuTick();
-    if (!FolderCount && ClosedAngle == OpenAngle) return;
+    if (DeleteOwner) DeleteBookmark();
+    if (!FolderCount) return;
     for (int i = 0; i < ContainerCount; i++) {
         Container *container = &Containers[i];
         void *vtable;
@@ -685,13 +782,9 @@ static void StartOnUiThread(void) {
     if (!Timer) Timer = SetTimer(NULL, 0, TICK_MS, Tick);
 }
 
-static void RowPaint(void *view, void *canvas) {
+static void RowBackground(void *view, void *canvas) {
     BYTE *row = view;
-    if (Learned) {
-        StyleRow(row);
-        PlaceCaret(row);
-    }
-    OriginalRowPaint(view, canvas);
+    OriginalRowBackground(view, canvas);
     if (!Learned) {
         if (LearnAttempts >= 64) return;
         LearnAttempts++;
@@ -728,14 +821,22 @@ static void ArrangeRows(void) {
     }
 }
 
+static int AngleOf(const char *direction) {
+    return !strcmp(direction, "left") ? 90 : !strcmp(direction, "up") ? 180 : !strcmp(direction, "right") ? 270 : 0;
+}
+
 PATCH_OPTION() {
     BOOL on = !strcmp(value, "true");
     if (!strcmp(key, "indicator.show")) CaretShown = on;
-    else if (!strcmp(key, "indicator.closed")) ClosedAngle = atoi(value);
-    else if (!strcmp(key, "indicator.open")) OpenAngle = atoi(value);
+    else if (!strcmp(key, "indicator.closed")) ClosedAngle = AngleOf(value);
+    else if (!strcmp(key, "indicator.open")) OpenAngle = AngleOf(value);
+    else if (!strcmp(key, "indicator.flip")) CaretFlipped = on;
     else if (!strcmp(key, "backdrop.show")) BackdropShown = on;
-    else if (!strcmp(key, "backdrop.left")) LeftOffset = atoi(value);
-    else if (!strcmp(key, "backdrop.right")) RightOffset = atoi(value);
+    else if (!strcmp(key, "backdrop.tinted")) BackdropTinted = on;
+    else if (!strcmp(key, "nesting.left")) LeftOffset = atoi(value);
+    else if (!strcmp(key, "nesting.right")) RightOffset = atoi(value);
+    else if (!strcmp(key, "bookmark.remove")) CloseRemoves = on;
+    else if (!strcmp(key, "bookmark.minus")) CloseIsMinus = on;
     else if (!strcmp(key, "indicator.position")) {
         Position = !strcmp(value, "before-icon") ? CARET_BEFORE_ICON : !strcmp(value, "before-name") ? CARET_BEFORE_NAME : !strcmp(value, "after-name") ? CARET_AFTER_NAME : CARET_RIGHT;
     }
@@ -754,15 +855,22 @@ PATCH_START() {
 PATCH_ENABLE() {
     // The icon table holds pointers, and they only mean something in the loaded DLL.
     if (!StorePath[0]) LoadFolders();
-    if (!HookVtable(RowVtable, Native.paintBackgroundSlot, RowPaint, (void **)&OriginalRowPaint)) {
+    if (!HookVtable(RowVtable, Native.caretPaintSlot, RowPaint, (void **)&OriginalRowPaint)) ModLog("couldn't hook the row's paint");
+    if (!HookVtable(RowVtable, Native.paintBackgroundSlot, RowBackground, (void **)&OriginalRowBackground)) {
         ModLog("couldn't hook the row");
         return;
     }
     if (!HookVtable(RowVtable, Native.mousePressedSlot, RowMousePressed, (void **)&OriginalMousePressed)) ModLog("couldn't hook the row's clicks");
+    if (!HookVtable(RowVtable, Native.layoutSlot, RowLayout, (void **)&OriginalRowLayout)) ModLog("couldn't hook the row's layout");
+    if (!HookVtable((void **)(Base + Native.caretVtable), Native.caretPaintSlot, CaretPaint, (void **)&OriginalCaretPaint)) ModLog("couldn't hook the caret");
     // Rows on screen paint again, and that brings back everything else.
     void *rows[MAX_ROWS];
     int count = FindObjects(RowVtable, rows, MAX_ROWS);
-    for (int i = 0; i < count; i++) Repaint(rows[i]);
+    for (int i = 0; i < count; i++) {
+        void **rowVtable = *(void ***)rows[i];
+        ((SizeChanged)rowVtable[Native.sizeChangedSlot])(rows[i]);
+        Repaint(rows[i]);
+    }
     Enabled = TRUE;
     ModLog("bookmark-folder-appearance ready: row vtable %#lx, paint slot %d, bounds +%#lx, %d folders stored, %d rows live",
            Native.rowVtable, Native.paintBackgroundSlot, Native.boundsOffset, FolderCount, count);
@@ -778,9 +886,19 @@ PATCH_DISABLE() {
         if (!SafeRead(Containers[i].view, &vtable, sizeof vtable) || vtable != Containers[i].vtable) continue;
         size_t count;
         void **children = ChildrenOf(Containers[i].view, &count);
-        for (size_t j = 0; j < count; j++)
-            if (IsRow(children[j])) RestoreRow(children[j]);
+        for (size_t j = 0; j < count; j++) {
+            if (!IsRow(children[j])) continue;
+            RestoreRow(children[j]);
+            ((RowFunction)(Base + Native.updateIndent))(children[j]);
+        }
     }
+    for (int i = 0; i < CloseButtonCount; i++) {
+        // A freed button doesn't have a vtable inside Aside any more, or anything else that looks like one.
+        void *vtable;
+        if (CloseButtons[i].icon && SafeRead(CloseButtons[i].button, &vtable, sizeof vtable) && IsInAside(vtable))
+            ((RowFunction)(Base + Native.closeUpdateImage))(CloseButtons[i].button);
+    }
+    CloseButtonCount = 0;
     ArrangeRows();
     ContainerCount = 0;
 }

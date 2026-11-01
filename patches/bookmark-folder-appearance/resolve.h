@@ -35,6 +35,7 @@ typedef struct {
     DWORD nodeTypeOffset, nodeManagedOffset, nodeIdOffset;
     DWORD ownerCommandOffset, ownerNodeIdOffset, ownerHasNodeOffset, ownerGenerationOffset;
     DWORD menuClosed;          // Runs the command once a folder's menu has closed.
+    DWORD deleteAccepted;      // What Aside's "Delete this bookmark?" runs with the answer.
 
     // Parts of Aside's tab group menu, read out of the function that builds it.
     DWORD operatorNew, operatorDelete;
@@ -68,6 +69,29 @@ typedef struct {
     // What a view's own size is, and how it's told that changed.
     int calculateSizeSlot, sizeChangedSlot;
     DWORD unboundedSize;       // The SizeBounds with no limits that the calculation is usually given.
+    int setVisibleSlot;
+
+    // How a row lays itself out. Its indent is base + depth * a fixed step, in its layout's insets.
+    int layoutSlot;            // VerticalBookmarkRowView::Layout.
+    DWORD setBoundsRect;       // View::SetBoundsRect.
+    DWORD updateIndent;        // The row's function that sets those insets.
+    DWORD depthOffset, collapsedOffset, rowLayoutOffset, insetLeftOffset;
+    int indentBase;
+
+    // The caret paints its image turned by progress * turnDegrees, around its middle.
+    DWORD caretVtable;
+    int caretPaintSlot;
+    DWORD caretProgressOffset;
+    double turnDegrees;
+    DWORD canvasPaintOffset;   // gfx::Canvas's cc::PaintCanvas.
+    int canvasSaveSlot, canvasConcatSlot, canvasRestoreSlot;
+
+    // The button that closes a bookmark's tab, which Aside shows on a loaded bookmark while it's hovered.
+    DWORD closeOffset, hoverOffset, loadedOffset;
+    DWORD closeUpdateImage;    // Sets the button's own icon.
+    int closeSetImageSlot;     // ImageButton::SetImageModel.
+    DWORD closeColorOffset;
+    DWORD minusIcon;           // 0 if this build has none.
 
     // By name, each falling back to the folder icon.
     DWORD changeIconIcon, resetIcon, renameIcon, deleteIcon, manageIcon;

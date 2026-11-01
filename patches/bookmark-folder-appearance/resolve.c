@@ -414,6 +414,28 @@ static const char *ResolveColorButton(const Lookup *lookup, const RUNTIME_FUNCTI
     return NULL;
 }
 
+// The label leads to where the dialog is built, and the first callback bound after it is its answer:
+// lea rcx,[invoke]; mov [rax+8],rcx, with the owner and the node's ID stored at +30h and +38h.
+static const char *ResolveBookmarkDelete(const Lookup *lookup, Bindings *bindings) {
+    const wchar_t *label = L"Delete this bookmark?";
+    size_t size = wcslen(label) * 2 + 2;
+    DWORD start = lookup->rdata->VirtualAddress, end = start + lookup->rdata->Misc.VirtualSize;
+    DWORD text = FindBytes(lookup, start, end, label, size);
+    if (!text) return "the bookmark's delete dialog";
+    size_t count;
+    const Reference *sites = LookupCode(lookup, text, &count);
+    if (!count) return "the bookmark's delete dialog";
+    const RUNTIME_FUNCTION *fn = LookupFunction(lookup, sites[0].site);
+    if (!fn) return "the bookmark's delete dialog";
+    for (DWORD at = sites[0].site; at + 40 <= fn->EndAddress; at++) {
+        const BYTE *p = lookup->base + at;
+        if (memcmp(p, "\x48\x8d\x0d", 3) || memcmp(p + 7, "\x48\x89\x48\x08", 4)) continue;
+        bindings->deleteAccepted = at + 7 + *(const INT32 *)(p + 3);
+        return NULL;
+    }
+    return "the bookmark's delete dialog";
+}
+
 // Popups, built in this order after the allocation:
 // new, construct, destruct the old one, delete it, the content view, then the widget.
 static const char *ResolvePopup(const Lookup *lookup, const RUNTIME_FUNCTION *show, Bindings *bindings) {
@@ -650,6 +672,117 @@ static const char *ResolveViewSize(const Lookup *lookup, Bindings *bindings) {
     return best >= 8 ? NULL : "View::CalculatePreferredSize";
 }
 
+// The row's Layout positions its close button by hand, comparing its bounds before setting them:
+// mov rcx,[rsi+close] ... cmp [rcx+bounds],r8d ... lea rdx,[rsp+x]; call SetBoundsRect
+static const char *ResolveLayout(const Lookup *lookup, Bindings *bindings) {
+    BYTE compare[7] = {0x44, 0x39, 0x81};
+    memcpy(compare + 3, &bindings->boundsOffset, 4);
+    const ULONGLONG *vtable = LookupRva(lookup, bindings->rowVtable);
+    for (int slot = 0; slot < MAX_SLOTS; slot++) {
+        DWORD method = LookupPointerRva(lookup, vtable + slot);
+        if (!method) break;
+        const RUNTIME_FUNCTION *fn = LookupFunction(lookup, method);
+        if (!fn || fn->BeginAddress != method || fn->EndAddress - method > 1024) continue;
+        DWORD at = FindBytes(lookup, method, fn->EndAddress, compare, sizeof compare);
+        if (!at) continue;
+        DWORD call = FindBytes(lookup, at, fn->EndAddress, "\x48\x8d\x54\x24", 4);
+        DWORD close = FindBytes(lookup, method, at, "\x48\x8b\x8e", 3);
+        if (!call || !close || !IsCall(lookup->base + call + 5)) continue;
+        bindings->layoutSlot = slot;
+        bindings->setBoundsRect = CallTarget(call + 5, lookup->base + call + 5);
+        bindings->closeOffset = *(const DWORD *)(lookup->base + close + 3);
+        return NULL;
+    }
+    return "the row's Layout";
+}
+
+// mov eax,[rsi+depth]; lea ecx,[rax+rax]; shl eax,4; sub eax,ecx; add eax,<base>. That's depth * 14, and then:
+// cmp [rcx+top],6; jne; cmp [rcx+left],eax
+static const char *ResolveIndent(const Lookup *lookup, Bindings *bindings) {
+    static const BYTE step[] = {0x8d, 0x0c, 0x00, 0xc1, 0xe0, 0x04, 0x29, 0xc8, 0x83, 0xc0};
+    DWORD at = FindBytes(lookup, bindings->updateIcons - 0x2000, bindings->updateIcons + 0x2000, step, sizeof step);
+    if (!at || lookup->base[at - 6] != 0x8b) return "the row's indent";
+    const RUNTIME_FUNCTION *fn = LookupFunction(lookup, at);
+    if (!fn) return "the row's indent";
+    bindings->updateIndent = fn->BeginAddress;
+    bindings->depthOffset = *(const DWORD *)(lookup->base + at - 4);
+    bindings->indentBase = lookup->base[at + sizeof step];
+    DWORD layout = FindBytes(lookup, fn->BeginAddress, at, "\x48\x8b\x89", 3);
+    DWORD collapsed = FindBytes(lookup, fn->BeginAddress, at, "\x8a\x96", 2);
+    DWORD left = FindBytes(lookup, at, fn->EndAddress, "\x39\x81", 2);
+    if (!layout || !collapsed || !left) return "the row's insets";
+    bindings->rowLayoutOffset = *(const DWORD *)(lookup->base + layout + 3);
+    bindings->collapsedOffset = *(const DWORD *)(lookup->base + collapsed + 2);
+    bindings->insetLeftOffset = *(const DWORD *)(lookup->base + left + 2);
+    return NULL;
+}
+
+// OnPaint: save; movsd xmm1,[rdi+progress]; mulsd xmm1,[degrees]; ...; concat; ImageView::OnPaint; restore.
+static const char *ResolveCaret(const Lookup *lookup, Bindings *bindings) {
+    if (!(bindings->caretVtable = LookupClassVtable(lookup, "TabExpandChevronView"))) return "TabExpandChevronView's vtable";
+    const ULONGLONG *vtable = LookupRva(lookup, bindings->caretVtable);
+    for (int slot = 0; slot < MAX_SLOTS; slot++) {
+        DWORD method = LookupPointerRva(lookup, vtable + slot);
+        if (!method) break;
+        const RUNTIME_FUNCTION *fn = LookupFunction(lookup, method);
+        if (!fn || fn->BeginAddress != method || fn->EndAddress - method > 1024) continue;
+        DWORD at = FindBytes(lookup, method, fn->EndAddress, "\xf2\x0f\x10\x8f", 4);
+        if (!at || memcmp(lookup->base + at + 8, "\xf2\x0f\x59\x0d", 4)) continue;
+        DWORD canvas = FindBytes(lookup, method, at, "\x48\x8b\x8e", 3);
+        DWORD save = FindBytes(lookup, method, at, "\x48\x8b\x40", 3);
+        DWORD concat = FindBytes(lookup, at, fn->EndAddress, "\x48\x8b\x80", 3);
+        DWORD restore = concat ? FindBytes(lookup, concat, fn->EndAddress, "\x48\x8b\x40", 3) : 0;
+        if (!canvas || !save || !concat || !restore) return "how the caret paints";
+        bindings->caretPaintSlot = slot;
+        bindings->caretProgressOffset = *(const DWORD *)(lookup->base + at + 4);
+        bindings->turnDegrees = *(const double *)LookupRva(lookup, at + 16 + *(const INT32 *)(lookup->base + at + 12));
+        bindings->canvasPaintOffset = *(const DWORD *)(lookup->base + canvas + 3);
+        bindings->canvasSaveSlot = lookup->base[save + 3] / 8;
+        bindings->canvasConcatSlot = *(const DWORD *)(lookup->base + concat + 3) / 8;
+        bindings->canvasRestoreSlot = lookup->base[restore + 3] / 8;
+        return NULL;
+    }
+    return "how the caret paints";
+}
+
+// The function that shows the close button reads the row's caret first, and it's what says when:
+// and al,[rsi+hovered]; ...; mov dil,[rsi+loaded]
+static const char *ResolveClose(const Lookup *lookup, Bindings *bindings) {
+    BYTE load[7] = {0x48, 0x8b, 0x8e};
+    memcpy(load + 3, &bindings->caretOffset, 4);
+    DWORD end = bindings->updateIcons;
+    for (DWORD at = FindBytes(lookup, end - 0x1000, end, load, sizeof load); at; at = FindBytes(lookup, at + 1, end, load, sizeof load)) {
+        const RUNTIME_FUNCTION *fn = LookupFunction(lookup, at);
+        if (!fn) continue;
+        DWORD hover = FindBytes(lookup, fn->BeginAddress, at, "\x22\x86", 2), loaded = FindBytes(lookup, fn->BeginAddress, at, "\x40\x8a\xbe", 3);
+        if (!hover || !loaded) continue;
+        bindings->hoverOffset = *(const DWORD *)(lookup->base + hover + 2);
+        bindings->loadedOffset = *(const DWORD *)(lookup->base + loaded + 3);
+        break;
+    }
+    if (!bindings->hoverOffset) return "when the close button shows";
+
+    // mov r8d,[rsi+color] ... mov rax,[rsi]; mov rax,[rax+SetImageModel]; mov rcx,rsi; xor edx,edx
+    DWORD icon = FindVectorIcon(lookup, "kAsideCloseIcon");
+    if (!icon) return "kAsideCloseIcon";
+    size_t count;
+    const Reference *sites = LookupCode(lookup, icon, &count);
+    for (size_t i = 0; i < count; i++) {
+        const RUNTIME_FUNCTION *fn = LookupFunction(lookup, sites[i].site);
+        if (!fn) continue;
+        DWORD color = FindBytes(lookup, fn->BeginAddress, fn->EndAddress, "\x44\x8b\x86", 3);
+        DWORD set = FindBytes(lookup, fn->BeginAddress, fn->EndAddress, "\x48\x8b\x06\x48\x8b\x80", 6);
+        if (!color || !set || memcmp(lookup->base + set + 10, "\x48\x89\xf1\x31\xd2", 5)) continue;
+        bindings->closeUpdateImage = fn->BeginAddress;
+        bindings->closeColorOffset = *(const DWORD *)(lookup->base + color + 3);
+        bindings->closeSetImageSlot = *(const DWORD *)(lookup->base + set + 6) / 8;
+        break;
+    }
+    if (!bindings->closeUpdateImage) return "the close button's icon";
+    bindings->minusIcon = FindVectorIcon(lookup, "kRemoveIcon");
+    return NULL;
+}
+
 static DWORD IconOr(const Lookup *lookup, const char *name, DWORD fallback) {
     DWORD icon = FindVectorIcon(lookup, name);
     return icon ? icon : fallback;
@@ -658,6 +791,7 @@ static DWORD IconOr(const Lookup *lookup, const char *name, DWORD fallback) {
 static const char *ResolveMenu(const Lookup *lookup, Bindings *bindings) {
     const char *missing = ResolveRightClick(lookup, bindings);
     if (missing) return missing;
+    if ((missing = ResolveBookmarkDelete(lookup, bindings))) return missing;
     const RUNTIME_FUNCTION *show = NULL;
     DWORD strings[4];
     size_t count;
@@ -675,6 +809,12 @@ static const char *ResolveMenu(const Lookup *lookup, Bindings *bindings) {
     if ((missing = ResolveGroupColors(lookup, bindings))) return missing;
     if ((missing = ResolveColorProvider(lookup, bindings))) return missing;
     if ((missing = ResolveViewSize(lookup, bindings))) return missing;
+    DWORD visibleOffset;
+    if (!LookupVisibility(lookup, &bindings->setVisibleSlot, &visibleOffset)) return "how views are shown and hidden";
+    if ((missing = ResolveLayout(lookup, bindings))) return missing;
+    if ((missing = ResolveIndent(lookup, bindings))) return missing;
+    if ((missing = ResolveCaret(lookup, bindings))) return missing;
+    if ((missing = ResolveClose(lookup, bindings))) return missing;
     bindings->changeIconIcon = IconOr(lookup, "kAsideEmojiAddReactionStrokeIcon", bindings->folderIcon);
     bindings->resetIcon = IconOr(lookup, "kAsideReloadChromeRefreshIcon", bindings->folderIcon);
     bindings->renameIcon = IconOr(lookup, "kAsideEditChromeRefreshIcon", bindings->folderIcon);
