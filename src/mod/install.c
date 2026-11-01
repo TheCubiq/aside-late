@@ -240,6 +240,13 @@ static BOOL AppendSources(const wchar_t *folder, wchar_t *commandLine, size_t si
     if (search == INVALID_HANDLE_VALUE) return FALSE;
     BOOL any = FALSE;
     do {
+        if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (wcscmp(found.cFileName, L".") && wcscmp(found.cFileName, L"..")) {
+                swprintf(path, PATH_SIZE, L"%ls\\%ls", folder, found.cFileName);
+                any |= AppendSources(path, commandLine, size);
+            }
+            continue;
+        }
         size_t length = wcslen(found.cFileName);
         if (length < 3 || _wcsicmp(found.cFileName + length - 2, L".c")) continue;
         swprintf(path, PATH_SIZE, L" \"%ls\\%ls\"", folder, found.cFileName);
@@ -278,7 +285,7 @@ BOOL InstallPatch(const char *repo, const char *id, const char *sha, char *error
     size_t size = 32768;
     wchar_t *commandLine = malloc(size * sizeof *commandLine);
     if (!commandLine) return FALSE;
-    swprintf(commandLine, size, L"\"%ls\" -O2 -static -shared -D_WIN32_WINNT=0x0A00 \"-I%ls\" -o \"%ls\"", gcc, sdk, dll);
+    swprintf(commandLine, size, L"\"%ls\" -O2 -static -shared -D_WIN32_WINNT=0x0A00 \"-I%ls\" \"-I%ls\" -o \"%ls\"", gcc, sdk, source, dll);
     if (!AppendSources(source, commandLine, size)) {
         free(commandLine);
         snprintf(error, errorSize, "The patch has no C files");
