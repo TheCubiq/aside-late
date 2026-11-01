@@ -19,7 +19,7 @@ A patch is one folder in `patches/`. [Patches](README.md#patches) in the README 
 - Prefer classes and methods to code patterns. They're what survives a rebuild of Aside.
 - Turning it off has to put everything back, while the browser runs.
 - List the builds you ran it on under `tested` in `patch.json`.
-- Add what it does and how it works to the README.
+- Give it a `README.md` saying what it does and how it works, and link it from the root README.
 
 ## Testing
 
