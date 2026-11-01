@@ -227,7 +227,15 @@ Its options arrange every row, folder or not:
 - **Selected tab first when collapsed** is what Aside does on its own: a folded folder lists its
   active tab first, and then the last one it was. Off, a jump over that code leaves bookmark order.
 - **A dragged row** takes the nesting of the row after the spot it's over, and the top level
-  below the last row.
+  below the last row. **Snap dragged rows to their nesting** locks it across instead, and how far the
+  cursor has come sideways since the press is the nesting. Aside's own drag still does the work: its move
+  callback is swapped for one that tells it the point meaning that nesting, then puts the row back under
+  the cursor. It only offers a folder on the folder's lower half, so a row going deeper below a folder is
+  told it's there, and one going shallower in the middle of a folder is told it's at the folder's end, so
+  it lands after the folder. While it's dragged, a row's level comes from Aside's drop target.
+- **What a hover or a drag changes** is tended to from the patch's timer, not while a row paints. The
+  close button gets a layer once it's hovered, and removing a layer while the compositor goes through them
+  takes the browser down.
 - **The caret** is moved with `View::SetBoundsRect` once the row has laid itself out. Its paint
   turns the image by a progress value times 180°, so setting that value just before it paints
   gives any two angles, either direction and Aside's own animation.
@@ -235,8 +243,9 @@ Its options arrange every row, folder or not:
   contrasts in light and dark mode. Aside animates rows with a transform and only changes their
   bounds at the end, so a backdrop's position comes from each row's record in Aside's animator.
   Aside removes a folded folder's rows at once, so its height eases on its own along about the
-  same curve. That height belongs to the folder's node, because most rebuilds make every row again, often
-  at the same addresses in another order. A dragged folder's backdrop moves by the row's drag offset.
+  same curve. That height belongs to the folder's node and its window, because most rebuilds make every row
+  again, often at the same addresses in another order, and each window's sidebar has its own rows for the
+  same nodes. A dragged folder's backdrop moves by the row's drag offset.
 - **A folding folder's rows** are ones Aside deletes at the end of its rebuild, or folders that
   **Collapsed loaded nesting** just hid. The row's deleting destructor holds on to the first kind when
   a rebuild called it, and the container paints the icon, title and caret of both, clipped to what
