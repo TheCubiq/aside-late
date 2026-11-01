@@ -101,6 +101,7 @@ typedef struct {
     DWORD canvasPaintOffset;   // gfx::Canvas's cc::PaintCanvas.
     int canvasSaveSlot, canvasConcatSlot, canvasRestoreSlot;
     DWORD canvasClipRect, canvasSaveLayerAlpha;  // gfx::Canvas's own. 0 if this build has neither.
+    DWORD viewWidgetOffset;    // Where a view keeps its widget. 0 if this build's View::GetWidget isn't just that.
 
     // The button that closes a bookmark's tab, which Aside shows on a loaded bookmark while it's hovered.
     DWORD closeOffset, hoverOffset, loadedOffset;

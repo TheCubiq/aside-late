@@ -898,6 +898,16 @@ static void ResolveCanvas(const Lookup *lookup, Bindings *bindings) {
     }
     bindings->canvasClipRect = clip;
     bindings->canvasSaveLayerAlpha = layer;
+
+    // View::GetWidget, which a row doesn't override, ends: mov rax,[rcx+widget]; ret
+    const ULONGLONG *vtable = LookupRva(lookup, bindings->rowVtable);
+    DWORD getWidget = LookupPointerRva(lookup, vtable + bindings->widgetMethodOffset / 8);
+    for (DWORD at = getWidget; getWidget && at < getWidget + 0x30; at++) {
+        const BYTE *p = lookup->base + at;
+        if (memcmp(p, "\x48\x8b\x81", 3) || p[7] != 0xc3) continue;
+        bindings->viewWidgetOffset = *(const DWORD *)(p + 3);
+        break;
+    }
 }
 
 // The function that shows the close button reads the row's caret first, and it's what says when:

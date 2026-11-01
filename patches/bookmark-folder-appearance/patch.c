@@ -993,10 +993,20 @@ static void CanvasPop(void *canvas) {
 
 // A row that's on its way out is its icon, title and caret, painted where they are in it. Not the row itself or its other
 // parts: each normally has a layer of its own, and some clear what they paint on, which here is the whole container.
-// With its container as its parent, it finds its colors.
+// A view that's been taken out of the tree has also forgotten its widget, and Aside stops the browser if an icon that needs
+// colors has none to ask. So for this long the row and its parts belong to the container's.
 static void PaintGhostRow(const Ghost *ghost, void *canvas, int shift) {
     BYTE *row = ghost->row, *parent = *(BYTE **)(row + ParentOffset);
+    void *widget = *(void **)(ghost->container + Native.viewWidgetOffset);
+    if (!widget) return;
     BYTE *parts[] = {*(BYTE **)(row + Native.leadingOffset), *(BYTE **)(row + Native.titleOffset), *(BYTE **)(row + Native.caretOffset)};
+    void *rowWidget = *(void **)(row + Native.viewWidgetOffset), *partWidgets[sizeof parts / sizeof *parts];
+    *(void **)(row + Native.viewWidgetOffset) = widget;
+    for (size_t i = 0; i < sizeof parts / sizeof *parts; i++) {
+        if (!parts[i]) continue;
+        partWidgets[i] = *(void **)(parts[i] + Native.viewWidgetOffset);
+        *(void **)(parts[i] + Native.viewWidgetOffset) = widget;
+    }
     *(BYTE **)(row + ParentOffset) = ghost->container;
     // A rebuild gives a row back Aside's icons, and only a row that paints gets its own again. Its node may be gone.
     char guid[GUID_SIZE];
@@ -1012,6 +1022,9 @@ static void PaintGhostRow(const Ghost *ghost, void *canvas, int shift) {
         CanvasPop(canvas);
     }
     *(BYTE **)(row + ParentOffset) = parent;
+    for (size_t i = 0; i < sizeof parts / sizeof *parts; i++)
+        if (parts[i]) *(void **)(parts[i] + Native.viewWidgetOffset) = partWidgets[i];
+    *(void **)(row + Native.viewWidgetOffset) = rowWidget;
 }
 
 static BOOL SameGroup(const Ghost *a, const Ghost *b) {
@@ -1288,7 +1301,7 @@ static const BYTE *FoldedAbove(const BYTE *row, const BYTE *owner) {
 
 // Whether a row that's going away has a folded folder to fade into, and if so it does.
 static BOOL TryHoldGhost(BYTE *row, BOOL kept) {
-    if (!Enabled || !Learned || !Native.canvasClipRect || !Native.canvasSaveLayerAlpha || GhostCount == MAX_GHOSTS) return FALSE;
+    if (!Enabled || !Learned || !Native.canvasClipRect || !Native.canvasSaveLayerAlpha || !Native.viewWidgetOffset || GhostCount == MAX_GHOSTS) return FALSE;
     const int *bounds = (const int *)(row + Native.boundsOffset);
     int depth = *(const int *)(row + Native.depthOffset);
     if (!IsVisible(row) || row[Native.collapsedOffset] || row[Native.dragActiveOffset] || bounds[3] <= 0 || depth >= MAX_GHOST_DEPTH) return FALSE;
@@ -1592,7 +1605,7 @@ PATCH_ENABLE() {
     if (!HookVtable(RowVtable, Native.layoutSlot, RowLayout, (void **)&OriginalRowLayout)) ModLog("couldn't hook the row's layout");
     if (!HookVtable((void **)(Base + Native.caretVtable), Native.caretPaintSlot, CaretPaint, (void **)&OriginalCaretPaint)) ModLog("couldn't hook the caret");
     if (Native.rebuild && !HookVtable(RowVtable, Native.rowDeleteSlot, RowDelete, (void **)&OriginalRowDelete)) ModLog("couldn't hook how a row is deleted");
-    if (!Native.rebuild || !Native.canvasClipRect || !Native.canvasSaveLayerAlpha) ModLog("a folding folder's rows won't fade in this build");
+    if (!Native.rebuild || !Native.canvasClipRect || !Native.canvasSaveLayerAlpha || !Native.viewWidgetOffset) ModLog("a folding folder's rows won't fade in this build");
     OrderEdited = FALSE;
     ApplyActiveOrder();
     // Rows on screen paint again, and that brings back everything else.
