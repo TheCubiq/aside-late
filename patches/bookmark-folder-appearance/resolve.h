@@ -85,6 +85,11 @@ typedef struct {
     DWORD expandedOffset, animatorOffset;
     // A row being dragged: whether it is, its state in the drag, and how far it's moved.
     DWORD dragActiveOffset, draggedOffset, dragOffsetX, dragOffsetY;
+    // What rebuilds the rows, and which method deletes one it has no more use for. 0 if this build has neither.
+    DWORD rebuild, rebuildEnd;
+    int rowDeleteSlot;
+    // Where the rows of a folded folder are put in order, and past where that's done. 0 if this build has neither.
+    DWORD activeOrderSite, activeOrderSkip;
     // A view's margins, which is one of its properties.
     DWORD propertiesOffset, marginsKey, marginsName, marginsDeleter, setProperty;
 

@@ -42,6 +42,7 @@ typedef struct {
     BYTE *view;
     void *vtable;
     unsigned lastBounds;
+    const BYTE *owner;
 } Container;
 
 typedef enum { HOVER_NEVER, HOVER_COLLAPSED, HOVER_ALWAYS } FolderHoverMode;
@@ -74,6 +75,7 @@ typedef struct {
 
 typedef void *(*SetProperty)(void *properties, const void *key, const char *name, void *deleter, void *value, void *unused);
 typedef void (*Deleter)(void *value);
+typedef void (*Rebuild)(void *owner, BOOL animate);
 typedef void *(*OperatorNew)(size_t size);
 typedef void *(*MeasureSize)(void *view, void *size, const void *bounds);
 typedef double (*AnimationValue)(void *animation);
@@ -135,7 +137,7 @@ static const IconEntry *Icons;
 // The patch's options.
 static BOOL CaretShown = TRUE, CaretFlipped, BackdropShown = TRUE, BackdropTinted = TRUE;
 static BOOL CloseRemoves, CloseConfirms = TRUE, CloseIsMinus;
-static BOOL LoadedRise;
+static BOOL LoadedRise, ActiveFirst;
 static FolderHoverMode FolderHover;
 static int BottomOffset = 4;
 static CaretPosition Position;
@@ -150,6 +152,7 @@ static int PaddingCount;
 static BlockMotion Motions[MAX_MOTIONS];
 static int MotionCount;
 static BOOL BlocksMoving, Projecting;
+static BOOL OrderEdited, RebuildWanted;
 static BYTE *DeleteOwner;
 static LONGLONG DeleteNodeId;
 static DWORD CloseIconOffset;
@@ -982,9 +985,12 @@ static void *ContainerMeasure(void *view, void *size, const void *bounds) {
     return OriginalContainerMeasure(view, size, bounds);
 }
 
-static void AddContainer(BYTE *view) {
-    for (int i = 0; i < ContainerCount; i++)
-        if (Containers[i].view == view) return;
+static void AddContainer(BYTE *view, const BYTE *owner) {
+    for (int i = 0; i < ContainerCount; i++) {
+        if (Containers[i].view != view) continue;
+        if (owner) Containers[i].owner = owner;
+        return;
+    }
     if (ContainerCount == MAX_CONTAINERS) return;
     void **vtable = *(void ***)view;
     if (!HookVtable(vtable, Native.paintBackgroundSlot, ContainerPaint, (void **)&OriginalContainerPaint)) {
@@ -995,9 +1001,29 @@ static void AddContainer(BYTE *view) {
     if (!HookVtable(vtable, Native.layoutSlot, ContainerLayout, (void **)&OriginalContainerLayout)) ModLog("couldn't hook the rows container's layout");
     if (!HookVtable(vtable, Native.calculateSizeSlot, ContainerMeasure, (void **)&OriginalContainerMeasure)) ModLog("couldn't hook the rows container's size");
     ((SizeChanged)vtable[Native.sizeChangedSlot])(view);
-    Containers[ContainerCount++] = (Container){.view = view, .vtable = vtable};
+    Containers[ContainerCount++] = (Container){.view = view, .vtable = vtable, .owner = owner};
     ModLog("rows container %p", view);
     Repaint(view);
+}
+
+static BOOL ContainerIsLive(const BYTE *view) {
+    for (int i = 0; i < ContainerCount; i++) {
+        void *vtable;
+        if (Containers[i].view == view) return SafeRead(view, &vtable, sizeof vtable) && vtable == Containers[i].vtable;
+    }
+    return FALSE;
+}
+
+// Aside puts the active tab first by looking for it just before its list of loaded tabs. Jumping over that leaves the list.
+static void ApplyActiveOrder(void) {
+    if (!Native.activeOrderSite || OrderEdited == !ActiveFirst) return;
+    static BYTE original[5];
+    BYTE *site = Base + Native.activeOrderSite;
+    BYTE jump[5] = {0xe9};
+    *(INT32 *)(jump + 1) = (INT32)(Native.activeOrderSkip - (Native.activeOrderSite + 5));
+    if (!OrderEdited) memcpy(original, site, sizeof original);
+    if (EditCode(site, OrderEdited ? jump : original, OrderEdited ? original : jump, sizeof jump)) OrderEdited = !OrderEdited;
+    else ModLog("couldn't change the order of a folded folder's rows");
 }
 
 // Rows move without their container repainting, and the blocks have to follow them.
@@ -1006,6 +1032,11 @@ static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time)
     (void)window, (void)message, (void)timer, (void)time;
     MenuTick();
     if (DeleteOwner) DeleteBookmark();
+    if (RebuildWanted && Native.rebuild) {
+        RebuildWanted = FALSE;
+        for (int i = 0; i < ContainerCount; i++)
+            if (Containers[i].owner && ContainerIsLive(Containers[i].view)) ((Rebuild)(Base + Native.rebuild))((void *)Containers[i].owner, FALSE);
+    }
     if (!FolderCount) return;
     BOOL moving = BlocksMoving;
     BlocksMoving = FALSE;
@@ -1112,7 +1143,7 @@ static void RowBackground(void *view, void *canvas) {
     StartOnUiThread();
     BYTE *parent = *(BYTE **)(row + ParentOffset);
     if (!parent) return;
-    AddContainer(parent);
+    AddContainer(parent, OwnerOf(row));
 }
 
 // Rows lay themselves out again, which puts back whatever isn't moved any more, and repaint.
@@ -1148,6 +1179,13 @@ PATCH_OPTION() {
     else if (!strcmp(key, "nesting.right")) RightOffset = atoi(value);
     else if (!strcmp(key, "nesting.bottom")) BottomOffset = atoi(value);
     else if (!strcmp(key, "nesting.loaded")) LoadedRise = on;
+    else if (!strcmp(key, "nesting.active-first")) {
+        ActiveFirst = on;
+        if (Enabled) {
+            ApplyActiveOrder();
+            RebuildWanted = TRUE;
+        }
+    }
     else if (!strcmp(key, "backdrop.hover")) FolderHover = on ? HOVER_ALWAYS : !strcmp(value, "collapsed") ? HOVER_COLLAPSED : HOVER_NEVER;
     else if (!strcmp(key, "bookmark.remove")) CloseRemoves = on;
     else if (!strcmp(key, "bookmark.confirm")) CloseConfirms = on;
@@ -1178,6 +1216,8 @@ PATCH_ENABLE() {
     if (!HookVtable(RowVtable, Native.mousePressedSlot, RowMousePressed, (void **)&OriginalMousePressed)) ModLog("couldn't hook the row's clicks");
     if (!HookVtable(RowVtable, Native.layoutSlot, RowLayout, (void **)&OriginalRowLayout)) ModLog("couldn't hook the row's layout");
     if (!HookVtable((void **)(Base + Native.caretVtable), Native.caretPaintSlot, CaretPaint, (void **)&OriginalCaretPaint)) ModLog("couldn't hook the caret");
+    OrderEdited = FALSE;
+    ApplyActiveOrder();
     // Rows on screen paint again, and that brings back everything else.
     void *rows[MAX_ROWS];
     int count = FindObjects(RowVtable, rows, MAX_ROWS);
@@ -1196,6 +1236,8 @@ PATCH_DISABLE() {
     if (Timer) KillTimer(NULL, Timer);
     Timer = 0;
     MenuTick();
+    OrderEdited = FALSE;
+    RebuildWanted = FALSE;
     for (int i = 0; i < ContainerCount; i++) {
         void *vtable;
         if (!SafeRead(Containers[i].view, &vtable, sizeof vtable) || vtable != Containers[i].vtable) continue;

@@ -743,6 +743,42 @@ static const char *ResolveIndent(const Lookup *lookup, Bindings *bindings) {
     return NULL;
 }
 
+// What rebuilds the rows is what calls the function that builds them, apart from that function itself. Rows it has no
+// more use for it deletes at its end: mov rax,[rcx]; mov rax,[rax+delete]; mov edx,1
+static void ResolveRebuild(const Lookup *lookup, const RUNTIME_FUNCTION *build, Bindings *bindings) {
+    for (DWORD rva = build->BeginAddress - 0x8000; rva + 5 <= build->BeginAddress; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (!IsCall(p) || CallTarget(rva, p) != build->BeginAddress) continue;
+        const RUNTIME_FUNCTION *fn = LookupFunction(lookup, rva);
+        if (!fn) continue;
+        DWORD at = FindBytes(lookup, fn->BeginAddress, fn->EndAddress, "\x48\x8b\x01\x48\x8b\x40", 6);
+        for (; at; at = FindBytes(lookup, at + 1, fn->EndAddress, "\x48\x8b\x01\x48\x8b\x40", 6)) {
+            if (memcmp(lookup->base + at + 7, "\xba\x01\x00\x00\x00", 5)) continue;
+            bindings->rebuild = fn->BeginAddress;
+            bindings->rebuildEnd = fn->EndAddress;
+            bindings->rowDeleteSlot = lookup->base[at + 6] / 8;
+            return;
+        }
+    }
+}
+
+// For a folded folder, the builder lists its active tab, then the last one it was, then every loaded tab in order:
+// cmp byte [rbx+has],1; jne; mov rdx,[rbx+active]; mov rcx,r12; call
+// The list in order starts: movaps [rsp+x],xmm9; mov qword [rsp+y],0; mov rcx,rbx; mov rdx,r12; lea r8,[rsp+x]
+static void ResolveActiveOrder(const Lookup *lookup, const RUNTIME_FUNCTION *build, Bindings *bindings) {
+    for (DWORD at = build->BeginAddress; at + 24 <= build->EndAddress; at++) {
+        const BYTE *p = lookup->base + at;
+        if (memcmp(p, "\x80\xbb", 2) || p[6] != 1 || p[7] != 0x75 || memcmp(p + 9, "\x48\x8b\x93", 3) || memcmp(p + 16, "\x4c\x89\xe1\xe8", 4)) continue;
+        for (DWORD skip = at; skip + 34 <= build->EndAddress && skip < at + 0x400; skip++) {
+            const BYTE *q = lookup->base + skip;
+            if (memcmp(q, "\x44\x0f\x29\x8c\x24", 5) || memcmp(q + 9, "\x48\xc7\x84\x24", 4) || memcmp(q + 21, "\x48\x89\xd9\x4c\x89\xe2\x4c\x8d\x84\x24", 10)) continue;
+            bindings->activeOrderSite = at;
+            bindings->activeOrderSkip = skip;
+            return;
+        }
+    }
+}
+
 // The function that builds the rows is the largest calling the row's indent function. It checks each folder against:
 // mov rdx,[rbx+ids]; mov r8,[rbx+ids+8]
 static const char *ResolveExpanded(const Lookup *lookup, Bindings *bindings) {
@@ -767,6 +803,8 @@ static const char *ResolveExpanded(const Lookup *lookup, Bindings *bindings) {
         if (memcmp(p, "\x48\x8b\x93", 3) || memcmp(p + 7, "\x4c\x8b\x83", 3)) continue;
         if (*(const DWORD *)(p + 10) != *(const DWORD *)(p + 3) + 8) continue;
         bindings->expandedOffset = *(const DWORD *)(p + 3);
+        ResolveRebuild(lookup, build, bindings);
+        ResolveActiveOrder(lookup, build, bindings);
         return NULL;
     }
     return "the list of open folders";

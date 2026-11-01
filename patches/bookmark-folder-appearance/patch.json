@@ -13,6 +13,7 @@
     {"group": "Nesting", "key": "nesting.right", "type": "slider", "title": "Offset right", "default": 6, "min": 0, "max": 32, "unit": "px"},
     {"group": "Nesting", "key": "nesting.bottom", "type": "slider", "title": "Offset bottom", "default": 4, "min": 0, "max": 24, "unit": "px"},
     {"group": "Nesting", "key": "nesting.loaded", "type": "switch", "title": "Collapsed loaded nesting", "default": false},
+    {"group": "Nesting", "key": "nesting.active-first", "type": "switch", "title": "Selected tab first when collapsed", "default": false},
     {"group": "Backdrop", "key": "backdrop.show", "type": "switch", "title": "Show", "default": true},
     {"group": "Backdrop", "key": "backdrop.tinted", "type": "switch", "title": "Tinted", "when": "backdrop.show", "default": true},
     {"group": "Backdrop", "key": "backdrop.hover", "type": "select", "title": "Highlight folders on hover", "default": "false", "choices": [{"value": "false", "title": "Never"}, {"value": "collapsed", "title": "When collapsed"}, {"value": "true", "title": "Always"}]},
