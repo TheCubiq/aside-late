@@ -790,6 +790,52 @@ static void ResolveUnload(const Lookup *lookup, const RUNTIME_FUNCTION *build, B
     }
 }
 
+// The builder binds each row's callbacks: lea rax,[method]; mov [reg+20h],rax. The one that moves a drag starts by testing
+// for the left button: mov eax,0xf800; and eax,[r8+50h]; cmp eax,800h
+static void ResolveDrag2(const Lookup *lookup, const RUNTIME_FUNCTION *build, Bindings *bindings) {
+    DWORD move = 0;
+    for (DWORD at = build->BeginAddress; at + 11 <= build->EndAddress && !move; at++) {
+        const BYTE *p = lookup->base + at;
+        if (memcmp(p, "\x48\x8d\x05", 3)) continue;
+        BOOL stored = (p[7] == 0x48 || p[7] == 0x49) && p[8] == 0x89 && (p[9] & 0xc0) == 0x40 && p[10] == 0x20;
+        if (!stored) continue;
+        DWORD method = at + 7 + *(const INT32 *)(p + 3);
+        const RUNTIME_FUNCTION *fn = LookupFunction(lookup, method);
+        if (fn && fn->BeginAddress == method && FindBytes(lookup, method, method + 0x100, "\xb8\x00\xf8\x00\x00\x41\x23\x40\x50\x3d\x00\x08\x00\x00", 14)) move = method;
+    }
+    if (!move) return;
+    const RUNTIME_FUNCTION *fn = LookupFunction(lookup, move);
+    // mov rcx,r14; mov rdx,rdi; mov r9,rbx; call convert. Then whether it's dragging yet: cmp byte [rsi+dragging],0
+    DWORD at = FindBytes(lookup, move, fn->EndAddress, "\x4c\x89\xf1\x48\x89\xfa\x49\x89\xd9\xe8", 10);
+    if (!at) return;
+    DWORD convert = CallTarget(at + 9, lookup->base + at + 9);
+    const RUNTIME_FUNCTION *conversion = LookupFunction(lookup, convert);
+    DWORD flag = FindBytes(lookup, at, at + 0x20, "\x80\xbe", 2);
+    if (!conversion || !flag || lookup->base[flag + 6] != 0) return;
+    // movsd xmm6,[r14+root]: the point it converts.
+    DWORD root = FindBytes(lookup, convert, conversion->EndAddress, "\xf2\x41\x0f\x10\xb6", 5);
+    if (!root) return;
+    // add edx,-16; movsxd rdx,edx; imul rdx,rdx,<a fourteenth>: the nesting it's after.
+    if (!FindBytes(lookup, move, fn->EndAddress, "\x83\xc2\xf0\x48\x63\xd2\x48\x69\xd2\x93\x24\x49\x92", 13)) return;
+    // mov dl,1; mov r8d,r14d; mov r9d,ebp; call place
+    DWORD place = FindBytes(lookup, move, fn->EndAddress, "\xb2\x01\x45\x89\xf0\x41\x89\xe9\xe8", 9);
+    if (!place) return;
+    // mov [rsi+target],r15; mov [rsi+target+8],r14, and past those whether there is one.
+    DWORD target = 0;
+    for (DWORD rva = move; rva + 14 <= fn->EndAddress && !target; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (memcmp(p, "\x4c\x89\xbe", 3) || memcmp(p + 7, "\x4c\x89\xb6", 3) || *(const DWORD *)(p + 10) != *(const DWORD *)(p + 3) + 8) continue;
+        target = *(const DWORD *)(p + 3);
+    }
+    if (!target) return;
+    bindings->dragConvert = convert;
+    bindings->dragPlace = CallTarget(place + 8, lookup->base + place + 8);
+    bindings->eventRootOffset = *(const DWORD *)(lookup->base + root + 5);
+    bindings->draggingOffset = *(const DWORD *)(lookup->base + flag + 2);
+    bindings->dropTargetOffset = target;
+    bindings->dragMove = move;
+}
+
 // For a folded folder, the builder lists its active tab, then the last one it was, then every loaded tab in order:
 // cmp byte [rbx+has],1; jne; mov rdx,[rbx+active]; mov rcx,r12; call
 // The list in order starts: movaps [rsp+x],xmm9; mov qword [rsp+y],0; mov rcx,rbx; mov rdx,r12; lea r8,[rsp+x]
@@ -834,6 +880,7 @@ static const char *ResolveExpanded(const Lookup *lookup, Bindings *bindings) {
         ResolveRebuild(lookup, build, bindings);
         ResolveRebuildGuard(lookup, bindings);
         ResolveUnload(lookup, build, bindings);
+        ResolveDrag2(lookup, build, bindings);
         ResolveActiveOrder(lookup, build, bindings);
         return NULL;
     }

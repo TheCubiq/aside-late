@@ -93,6 +93,9 @@ typedef struct {
     DWORD unloadTab;           // What a loaded bookmark's X runs, with the owner and the node. 0 if this build has none.
     // Where the rows of a folded folder are put in order, and past where that's done. 0 if this build has neither.
     DWORD activeOrderSite, activeOrderSkip;
+    // Moving a dragged row. It works out the nesting it's after from a point: (x - 16) / 14. All 0 if this build differs.
+    DWORD dragMove, dragConvert, dragPlace;
+    DWORD eventRootOffset, draggingOffset, dropTargetOffset;
     // A view's margins, which is one of its properties.
     DWORD propertiesOffset, marginsKey, marginsName, marginsDeleter, setProperty;
 
