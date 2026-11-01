@@ -11,8 +11,11 @@
     {"group": "Indicator", "key": "indicator.flip", "type": "switch", "title": "Flip animation direction", "when": "indicator.show", "default": false},
     {"group": "Nesting", "key": "nesting.left", "type": "slider", "title": "Offset left", "default": 14, "min": 0, "max": 32, "unit": "px"},
     {"group": "Nesting", "key": "nesting.right", "type": "slider", "title": "Offset right", "default": 6, "min": 0, "max": 32, "unit": "px"},
+    {"group": "Nesting", "key": "nesting.bottom", "type": "slider", "title": "Offset bottom", "default": 4, "min": 0, "max": 24, "unit": "px"},
+    {"group": "Nesting", "key": "nesting.loaded", "type": "switch", "title": "Collapsed loaded nesting", "default": false},
     {"group": "Backdrop", "key": "backdrop.show", "type": "switch", "title": "Show", "default": true},
     {"group": "Backdrop", "key": "backdrop.tinted", "type": "switch", "title": "Tinted", "when": "backdrop.show", "default": true},
+    {"group": "Backdrop", "key": "backdrop.hover", "type": "switch", "title": "Highlight folders on hover", "default": false},
     {"group": "Bookmarks", "key": "bookmark.remove", "type": "switch", "title": "X removes unloaded bookmarks", "default": false},
     {"group": "Bookmarks", "key": "bookmark.confirm", "type": "switch", "title": "Ask before removing", "when": "bookmark.remove", "default": true},
     {"group": "Bookmarks", "key": "bookmark.minus", "type": "switch", "title": "Minus instead of X when loaded", "default": false}

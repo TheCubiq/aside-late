@@ -3,6 +3,7 @@
 
 #include "resolve.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include "menu.h"
@@ -12,6 +13,11 @@
 #define MAX_ROWS 4096
 #define GUID_SIZE 36
 #define BUTTON_STATES 3
+#define MAX_TRACKED_ROWS 256
+#define MAX_MOTIONS 256
+#define MOTION_MS 180
+#define ANIMATOR_ROWS 0xb8
+#define ANIMATION_VALUE_SLOT 4
 #define CLOSE_BUTTON_SIZE 0x640
 #define CLOSE_ICON_SIZE 16
 #define PLAIN_ALPHA 0x1a000000u
@@ -48,6 +54,27 @@ typedef struct {
     int x, y, width, height;
 } ViewRect;
 
+// Extra margin a row has been given below it, and what it had before.
+typedef struct {
+    BYTE *row;
+    const int *owned;
+    int base[4];
+    int added;
+} RowPadding;
+
+// A backdrop's height as it's shown on the way to what it should be. Aside removes a folded folder's rows at once, so
+// it can't just follow them.
+typedef struct {
+    const BYTE *row;
+    int from, to, shown;
+    ULONGLONG start;
+} BlockMotion;
+
+typedef void *(*SetProperty)(void *properties, const void *key, const char *name, void *deleter, void *value, void *unused);
+typedef void (*Deleter)(void *value);
+typedef void *(*OperatorNew)(size_t size);
+typedef void *(*MeasureSize)(void *view, void *size, const void *bounds);
+typedef double (*AnimationValue)(void *animation);
 typedef void (*DeleteAccepted)(void *state, int result);
 typedef void (*SetViewBounds)(void *view, const ViewRect *rect);
 typedef void (*RowFunction)(void *row);
@@ -79,7 +106,8 @@ static Bindings Native;
 static BYTE *Base;
 static void *RowVtable;
 static PaintBackground OriginalRowPaint, OriginalRowBackground, OriginalContainerPaint, OriginalContainerOnPaint, OriginalCaretPaint;
-static Layout OriginalRowLayout;
+static Layout OriginalRowLayout, OriginalContainerLayout;
+static MeasureSize OriginalContainerMeasure;
 static ClosePress OriginalClosePress;
 static MousePressed OriginalMousePressed;
 
@@ -105,11 +133,20 @@ static const IconEntry *Icons;
 // The patch's options.
 static BOOL CaretShown = TRUE, CaretFlipped, BackdropShown = TRUE, BackdropTinted = TRUE;
 static BOOL CloseRemoves, CloseConfirms = TRUE, CloseIsMinus;
+static BOOL LoadedRise, FolderHover;
+static int BottomOffset = 4;
 static CaretPosition Position;
 static int ClosedAngle, OpenAngle = 180;
 static int LeftOffset = 14, RightOffset = 6;
 static BOOL Enabled;
 
+static BYTE *HiddenRows[MAX_TRACKED_ROWS];
+static int HiddenCount;
+static RowPadding Paddings[MAX_TRACKED_ROWS];
+static int PaddingCount;
+static BlockMotion Motions[MAX_MOTIONS];
+static int MotionCount;
+static BOOL BlocksMoving, Projecting;
 static BYTE *DeleteOwner;
 static LONGLONG DeleteNodeId;
 static DWORD CloseIconOffset;
@@ -371,9 +408,63 @@ static void StyleRow(BYTE *row) {
     if (folder->color >= 0) SetRowTitleColor(row, TitleColor(folder->color));
 }
 
-// How far in a row's nesting puts it. A collapsed sidebar shows no nesting.
+static BYTE *OwnerOf(const BYTE *row);
+
+static BOOL FolderIsOpen(const BYTE *owner, const BYTE *node) {
+    const LONGLONG *ids = *(const LONGLONG *const *)(owner + Native.expandedOffset);
+    size_t low = 0, count = *(const size_t *)(owner + Native.expandedOffset + 8), high = count;
+    LONGLONG id = *(const LONGLONG *)(node + Native.nodeIdOffset);
+    while (low < high) {
+        size_t middle = low + (high - low) / 2;
+        if (ids[middle] < id) low = middle + 1;
+        else high = middle;
+    }
+    return low < count && ids[low] == id;
+}
+
+// How many levels above a row its outermost folded folder is, or 0. Aside only keeps a row under a folded folder if
+// it's loaded, or on the way to one that is.
+static int LevelsToFolded(const BYTE *row) {
+    const BYTE *node = Learned ? NodeOf(row) : NULL, *owner = node ? OwnerOf(row) : NULL;
+    if (!LoadedRise || !owner) return 0;
+    int levels = 0, depth = *(const int *)(row + Native.depthOffset);
+    const BYTE *up = NodeParent(node);
+    for (int level = 1; level <= depth && up; level++, up = NodeParent(up))
+        if (!FolderIsOpen(owner, up)) levels = level;
+    return levels;
+}
+
+static int RowDepth(const BYTE *row);
+
+// How much a drag changes the nesting of the rows in it: the first one lands at the level of the row after the spot
+// it's over, and there's only the top level after the last one.
+static int DragDepthChange(const BYTE *row) {
+    const BYTE *parent = *(const BYTE *const *)(row + ParentOffset), *first = NULL;
+    if (!parent) return 0;
+    size_t count;
+    void **children = ChildrenOf(parent, &count);
+    for (size_t i = 0; i < count && !first; i++)
+        if (IsRow(children[i]) && ((const BYTE *)children[i])[Native.dragActiveOffset]) first = children[i];
+    if (!first) return 0;
+    int y = ((const int *)(first + Native.boundsOffset))[1] + *(const int *)(first + Native.dragOffsetY), best = INT_MAX, landing = 0;
+    for (size_t i = 0; i < count; i++) {
+        const BYTE *other = children[i];
+        if (!IsRow(other) || !IsVisible(other) || other[Native.dragActiveOffset]) continue;
+        int top = ((const int *)(other + Native.boundsOffset))[1];
+        if (top <= y || top >= best) continue;
+        best = top;
+        landing = RowDepth(other);
+    }
+    return landing - *(const int *)(first + Native.depthOffset);
+}
+
+// How far in a row's nesting puts it. A collapsed sidebar shows no nesting, a loaded row under a folded folder sits
+// directly under that folder, and a dragged row is on its way to somewhere else.
 static int RowDepth(const BYTE *row) {
-    return row[Native.collapsedOffset] ? 0 : *(const int *)(row + Native.depthOffset);
+    if (row[Native.collapsedOffset]) return 0;
+    if (Learned && row[Native.dragActiveOffset]) return max(*(const int *)(row + Native.depthOffset) + DragDepthChange(row), 0);
+    int levels = LevelsToFolded(row);
+    return *(const int *)(row + Native.depthOffset) - (levels > 1 ? levels - 1 : 0);
 }
 
 static void SetBounds(BYTE *view, int x, int width) {
@@ -452,8 +543,19 @@ static void RowPaint(void *view, void *canvas) {
     }
     int depth = RowDepth(row), left = depth * LeftOffset, right = depth * RightOffset;
     int *bounds = (int *)(row + Native.boundsOffset), width = bounds[2];
+    // A drag doesn't lay the row out, and it can change the level it's at.
+    BYTE *layout = *(BYTE **)(row + Native.rowLayoutOffset);
+    if (row[Native.dragActiveOffset] && layout && *(int *)(layout + Native.insetLeftOffset) != Native.indentBase + left) {
+        void **rowVtable = *(void ***)row;
+        ((SizeChanged)rowVtable[Native.sizeChangedSlot])(row);
+    }
+    // A folder's own hover is drawn with the row's, so for this long it isn't hovered.
+    const BYTE *node = Learned ? NodeOf(row) : NULL;
+    BYTE hovered = row[Native.hoverOffset];
+    if (!FolderHover && node && *(const int *)(node + Native.nodeTypeOffset)) row[Native.hoverOffset] = 0;
     if ((!left && !right) || width <= left + right) {
         OriginalRowPaint(view, canvas);
+        row[Native.hoverOffset] = hovered;
         return;
     }
     void *paint = *(void **)((BYTE *)canvas + Native.canvasPaintOffset);
@@ -465,10 +567,9 @@ static void RowPaint(void *view, void *canvas) {
     bounds[2] = width - left - right;
     OriginalRowPaint(view, canvas);
     bounds[2] = width;
+    row[Native.hoverOffset] = hovered;
     ((CanvasRestore)vtable[Native.canvasRestoreSlot])(paint);
 }
-
-static BYTE *OwnerOf(const BYTE *row);
 
 // Answers Aside's "Delete this bookmark?" without asking it. The answer's state holds a weak flag, which it releases.
 static void DeleteBookmark(void) {
@@ -614,20 +715,102 @@ static void PaintBlock(BYTE *container, void *canvas, const RECT *rect, int left
     ((Paint)vtable[Native.backgroundPaintOffset / 8])(Rounded, canvas, container);
 }
 
-// Whether anything inside a folder is showing, and how far down it reaches.
-static BOOL IsOpen(void **children, size_t count, size_t index, RECT *block) {
-    BYTE *node = NodeOf(children[index]);
-    BOOL open = FALSE;
+// A folder that shows a backdrop, which is one with a color. Neutral is like Aside's neutral groups, with no fill of its own.
+static BOOL HasBackdrop(const BYTE *row) {
+    const BYTE *node = NodeOf(row);
+    if (!BackdropShown || !node) return FALSE;
+    int color = FindColor(GuidOf(node));
+    return color >= 0 && color != NEUTRAL_COLOR;
+}
+
+// The last showing row inside a folder, or the folder itself.
+static size_t LastInside(void **children, size_t count, size_t index) {
+    const BYTE *node = NodeOf(children[index]);
+    size_t last = index;
     for (size_t j = index + 1; j < count; j++) {
-        BYTE *child = children[j];
+        const BYTE *child = children[j];
         if (!IsRow(child) || !NodeOf(child) || !IsInside(NodeOf(child), node)) break;
-        RECT bounds;
-        BoundsOf(child, &bounds);
-        if (!IsVisible(child) || bounds.bottom <= bounds.top) continue;
-        if (block) block->bottom = max(block->bottom, bounds.bottom);
-        open = TRUE;
+        if (IsVisible(child)) last = j;
     }
-    return open;
+    return last;
+}
+
+// The space a folder's bottom has inside it: its own, and that of each folder inside it ending on the same row.
+static int FooterOf(void **children, size_t count, size_t index) {
+    size_t last = LastInside(children, count, index);
+    if (last == index) return 0;
+    int footer = 0;
+    for (size_t k = index; k < last; k++)
+        if (IsRow(children[k]) && IsVisible(children[k]) && NodeOf(children[k]) && HasBackdrop(children[k]) && LastInside(children, count, k) == last) footer += BottomOffset;
+    return footer;
+}
+
+// From wherever it's showing now, so turning back halfway stays smooth, on about the curve Aside moves its rows along.
+static int ShownHeight(const BYTE *row, int target, int firstHeight, BOOL jump) {
+    BlockMotion *motion = NULL;
+    for (int i = 0; i < MotionCount && !motion; i++)
+        if (Motions[i].row == row) motion = &Motions[i];
+    ULONGLONG now = GetTickCount64();
+    if (!motion) {
+        if (MotionCount == MAX_MOTIONS) MotionCount = 0;
+        motion = &Motions[MotionCount++];
+        *motion = (BlockMotion){row, firstHeight, target, firstHeight, now};
+    }
+    if (jump) *motion = (BlockMotion){row, target, target, target, now};
+    if (motion->to != target) {
+        motion->from = motion->shown;
+        motion->to = target;
+        motion->start = now;
+    }
+    ULONGLONG elapsed = now - motion->start;
+    if (elapsed >= MOTION_MS || motion->from == motion->to) {
+        motion->shown = motion->to;
+        return motion->shown;
+    }
+    double done = (double)elapsed / MOTION_MS;
+    motion->shown = motion->from + (int)((motion->to - motion->from) * done * done * (3 - 2 * done));
+    BlocksMoving = TRUE;
+    return motion->shown;
+}
+
+// Aside moves rows with a transform while it animates them, and only changes their bounds at the end. Its animator
+// keeps a record for each: where the row started, where it's going, and the animation. Nothing here is assumed to
+// still be valid, so a build that's changed this just has the backdrop follow the bounds.
+static const BYTE *RowMotion(const BYTE *row) {
+    const BYTE *owner = OwnerOf(row), *animator, *entry;
+    if (!owner || !SafeRead(owner + Native.animatorOffset, &animator, sizeof animator) || !animator) return NULL;
+    const BYTE *root = animator + ANIMATOR_ROWS;
+    if (!SafeRead(root, &entry, sizeof entry)) return NULL;
+    for (int guard = 0; entry && entry != root && guard < 64; guard++) {
+        const BYTE *key;
+        if (!SafeRead(entry + 0x20, &key, sizeof key)) return NULL;
+        if (key == row) return entry;
+        if (!SafeRead(entry + (row > key ? 8 : 0), &entry, sizeof entry)) return NULL;
+    }
+    return NULL;
+}
+
+// A row's rect where it's showing now and where it ends up, and whether it's on its way.
+static BOOL RowPlace(const BYTE *row, RECT *now, RECT *end) {
+    BoundsOf(row, now);
+    *end = *now;
+    const BYTE *motion = RowMotion(row);
+    int from[4], to[4];
+    const BYTE *animation;
+    void **vtable;
+    if (!motion || !SafeRead(motion + 0x28, from, sizeof from) || !SafeRead(motion + 0x38, to, sizeof to) || !SafeRead(motion + 0x48, &animation, sizeof animation) || !animation) return FALSE;
+    if (!SafeRead(animation, &vtable, sizeof vtable) || !IsInAside(vtable)) return FALSE;
+    void *method;
+    if (!SafeRead(vtable + ANIMATION_VALUE_SLOT, &method, sizeof method) || !IsInAside(method)) return FALSE;
+    double value = ((AnimationValue)method)((void *)animation);
+    if (!(value >= 0.0 && value <= 1.0)) return FALSE;
+    now->left = from[0] + (int)((to[0] - from[0]) * value);
+    now->top = from[1] + (int)((to[1] - from[1]) * value);
+    now->right = now->left + from[2] + (int)((to[2] - from[2]) * value);
+    now->bottom = now->top + from[3] + (int)((to[3] - from[3]) * value);
+    *end = (RECT){to[0], to[1], to[0] + to[2], to[1] + to[3]};
+    BlocksMoving = TRUE;
+    return TRUE;
 }
 
 static void PaintFolders(BYTE *container, void *canvas) {
@@ -636,17 +819,37 @@ static void PaintFolders(BYTE *container, void *canvas) {
     void **children = ChildrenOf(container, &count);
     for (size_t i = 0; i < count; i++) {
         BYTE *row = children[i];
-        if (!IsRow(row) || !IsVisible(row) || !NodeOf(row)) continue;
+        if (!IsRow(row) || !IsVisible(row) || !HasBackdrop(row)) continue;
         int color = FindColor(GuidOf(NodeOf(row)));
-        // Like Aside's neutral groups, which have no fill of their own.
-        if (color < 0 || color == NEUTRAL_COLOR) continue;
-        RECT block;
-        BoundsOf(row, &block);
-        if (block.bottom <= block.top) continue;
-        BOOL expanded = IsOpen(children, count, i, &block);
-        // Rows can already be as narrow as their nesting here, if this is inside the container's own paint.
-        int depth = RowsNarrowed ? 0 : RowDepth(row);
-        PaintBlock(container, canvas, &block, depth * LeftOffset, depth * RightOffset, color, expanded);
+        RECT block, end;
+        BOOL moving = RowPlace(row, &block, &end);
+        if (end.bottom <= end.top) continue;
+        int rowHeight = end.bottom - end.top, bottom = end.bottom;
+        for (size_t j = i + 1, last = LastInside(children, count, i); j <= last; j++) {
+            if (!IsRow(children[j]) || !IsVisible(children[j])) continue;
+            RECT childNow, childEnd;
+            RowPlace(children[j], &childNow, &childEnd);
+            if (childEnd.bottom > childEnd.top) bottom = max(bottom, childEnd.bottom);
+        }
+        // A dragged folder takes its backdrop with it, right where it is.
+        BOOL dragged = row[Native.dragActiveOffset];
+        // A row Aside is still bringing in grows from itself. Anything already there has nowhere it was coming from.
+        int target = bottom - end.top + FooterOf(children, count, i);
+        int height = ShownHeight(row, target, moving ? rowHeight : target, dragged);
+        block.bottom = block.top + height;
+        if (dragged) {
+            block.left += *(const int *)(row + Native.dragOffsetX);
+            block.right += *(const int *)(row + Native.dragOffsetX);
+            block.top += *(const int *)(row + Native.dragOffsetY);
+            block.bottom += *(const int *)(row + Native.dragOffsetY);
+        }
+        int left = RowDepth(row) * LeftOffset, right = RowDepth(row) * RightOffset;
+        // Bounds can already be as narrow as their nesting here, if this is inside the container's own paint.
+        if (RowsNarrowed && !moving) {
+            block.left -= left;
+            block.right += right;
+        }
+        PaintBlock(container, canvas, &block, left, right, color, height > rowHeight);
     }
 }
 
@@ -678,6 +881,104 @@ static void ContainerOnPaint(void *view, void *canvas) {
     NarrowRows(view, -1);
 }
 
+static const int *RowMargins(const BYTE *row) {
+    const void *key = Base + Native.marginsKey;
+    const BYTE *end = row + Native.propertiesOffset + 0x10, *node = *(const BYTE *const *)end;
+    while (node) {
+        const void *at = *(const void *const *)(node + 0x20);
+        if (at == key) return *(const int *const *)(node + 0x30);
+        node = *(const BYTE *const *)(node + (key > at ? 8 : 0));
+    }
+    return NULL;
+}
+
+static void SetRowPadding(BYTE *row, int padding) {
+    const int *current = RowMargins(row);
+    RowPadding *entry = NULL;
+    for (int i = 0; i < PaddingCount && !entry; i++)
+        if (Paddings[i].row == row) entry = &Paddings[i];
+    // Aside can replace them, or clear them in place, when it rebuilds.
+    if (entry && (current != entry->owned || !current || current[2] != entry->base[2] + entry->added)) {
+        *entry = Paddings[--PaddingCount];
+        entry = NULL;
+    }
+    if (!entry && !padding) return;
+    if (!entry) {
+        if (PaddingCount == MAX_TRACKED_ROWS) PaddingCount = 0;
+        entry = &Paddings[PaddingCount++];
+        *entry = (RowPadding){.row = row};
+        if (current) memcpy(entry->base, current, sizeof entry->base);
+    }
+    if (entry->added == padding) return;
+    int *value = ((OperatorNew)(Base + Native.operatorNew))(sizeof entry->base);
+    memcpy(value, entry->base, sizeof entry->base);
+    value[2] += padding;
+    void *old = ((SetProperty)(Base + Native.setProperty))(row + Native.propertiesOffset, Base + Native.marginsKey, (const char *)(Base + Native.marginsName), Base + Native.marginsDeleter, value, NULL);
+    if (old) ((Deleter)(Base + Native.marginsDeleter))(old);
+    entry->owned = value;
+    entry->added = padding;
+    void **vtable = *(void ***)row;
+    ((SizeChanged)vtable[Native.sizeChangedSlot])(row);
+}
+
+static void SetRowHidden(BYTE *row, BOOL hidden) {
+    int found = -1;
+    for (int i = 0; i < HiddenCount && found < 0; i++)
+        if (HiddenRows[i] == row) found = i;
+    void **vtable = *(void ***)row;
+    if (hidden) {
+        if (found < 0 && HiddenCount < MAX_TRACKED_ROWS) HiddenRows[HiddenCount++] = row;
+        if (IsVisible(row)) ((SetVisible)vtable[Native.setVisibleSlot])(row, FALSE);
+    } else if (found >= 0) {
+        HiddenRows[found] = HiddenRows[--HiddenCount];
+        ((SetVisible)vtable[Native.setVisibleSlot])(row, TRUE);
+    }
+}
+
+// Everything that changes how tall rows are has to be in place before Aside measures them, so its own animation heads
+// for the right place.
+static void ArrangeForLayout(BYTE *container) {
+    if (Projecting || !Learned || !Enabled) return;
+    Projecting = TRUE;
+    size_t count;
+    void **children = ChildrenOf(container, &count);
+    for (size_t i = 0; i < count; i++) {
+        BYTE *row = children[i];
+        if (!IsRow(row) || !NodeOf(row)) continue;
+        // A folder under a folded folder is only there because of a loaded row, which now sits under the folded one.
+        SetRowHidden(row, *(const int *)(NodeOf(row) + Native.nodeTypeOffset) && LevelsToFolded(row) && !row[Native.dragActiveOffset]);
+        BYTE *layout = *(BYTE **)(row + Native.rowLayoutOffset);
+        int inset = Native.indentBase + RowDepth(row) * LeftOffset;
+        // Only a showing row lays itself out and takes this up.
+        if (layout && IsVisible(row) && !row[Native.collapsedOffset] && *(int *)(layout + Native.insetLeftOffset) != inset) {
+            void **vtable = *(void ***)row;
+            ((SizeChanged)vtable[Native.sizeChangedSlot])(row);
+            Repaint(row);
+        }
+    }
+    for (size_t i = 0; i < count; i++) {
+        BYTE *row = children[i];
+        if (!IsRow(row) || !NodeOf(row)) continue;
+        int padding = 0;
+        // What ends on this row: each folder it's the last row of.
+        if (IsVisible(row))
+            for (size_t k = 0; k < i; k++)
+                if (IsRow(children[k]) && IsVisible(children[k]) && NodeOf(children[k]) && HasBackdrop(children[k]) && LastInside(children, count, k) == i) padding += BottomOffset;
+        SetRowPadding(row, padding);
+    }
+    Projecting = FALSE;
+}
+
+static void ContainerLayout(void *view, void *key) {
+    ArrangeForLayout(view);
+    OriginalContainerLayout(view, key);
+}
+
+static void *ContainerMeasure(void *view, void *size, const void *bounds) {
+    ArrangeForLayout(view);
+    return OriginalContainerMeasure(view, size, bounds);
+}
+
 static void AddContainer(BYTE *view) {
     for (int i = 0; i < ContainerCount; i++)
         if (Containers[i].view == view) return;
@@ -688,6 +989,9 @@ static void AddContainer(BYTE *view) {
         return;
     }
     if (!HookVtable(vtable, Native.caretPaintSlot, ContainerOnPaint, (void **)&OriginalContainerOnPaint)) ModLog("couldn't hook the rows container's paint");
+    if (!HookVtable(vtable, Native.layoutSlot, ContainerLayout, (void **)&OriginalContainerLayout)) ModLog("couldn't hook the rows container's layout");
+    if (!HookVtable(vtable, Native.calculateSizeSlot, ContainerMeasure, (void **)&OriginalContainerMeasure)) ModLog("couldn't hook the rows container's size");
+    ((SizeChanged)vtable[Native.sizeChangedSlot])(view);
     Containers[ContainerCount++] = (Container){.view = view, .vtable = vtable};
     ModLog("rows container %p", view);
     Repaint(view);
@@ -700,6 +1004,8 @@ static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time)
     MenuTick();
     if (DeleteOwner) DeleteBookmark();
     if (!FolderCount) return;
+    BOOL moving = BlocksMoving;
+    BlocksMoving = FALSE;
     for (int i = 0; i < ContainerCount; i++) {
         Container *container = &Containers[i];
         void *vtable;
@@ -718,7 +1024,7 @@ static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time)
             hash = hash * 31 + bounds[3];
             hash = hash * 31 + IsVisible(children[j]);
         }
-        if (hash == container->lastBounds) continue;
+        if (hash == container->lastBounds && !moving) continue;
         container->lastBounds = hash;
         Repaint(container->view);
     }
@@ -837,6 +1143,9 @@ PATCH_OPTION() {
     else if (!strcmp(key, "backdrop.tinted")) BackdropTinted = on;
     else if (!strcmp(key, "nesting.left")) LeftOffset = atoi(value);
     else if (!strcmp(key, "nesting.right")) RightOffset = atoi(value);
+    else if (!strcmp(key, "nesting.bottom")) BottomOffset = atoi(value);
+    else if (!strcmp(key, "nesting.loaded")) LoadedRise = on;
+    else if (!strcmp(key, "backdrop.hover")) FolderHover = on;
     else if (!strcmp(key, "bookmark.remove")) CloseRemoves = on;
     else if (!strcmp(key, "bookmark.confirm")) CloseConfirms = on;
     else if (!strcmp(key, "bookmark.minus")) CloseIsMinus = on;
@@ -893,6 +1202,8 @@ PATCH_DISABLE() {
             if (!IsRow(children[j])) continue;
             RestoreRow(children[j]);
             ((RowFunction)(Base + Native.updateIndent))(children[j]);
+            SetRowHidden(children[j], FALSE);
+            SetRowPadding(children[j], 0);
             BYTE *close = *(BYTE **)((BYTE *)children[j] + Native.closeOffset);
             if (close && Native.minusIcon && CloseIconOffset && *(const void *const *)(close + CloseIconOffset) == Base + Native.minusIcon)
                 ((RowFunction)(Base + Native.closeUpdateImage))(close);

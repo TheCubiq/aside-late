@@ -81,6 +81,13 @@ typedef struct {
     DWORD depthOffset, collapsedOffset, rowLayoutOffset, insetLeftOffset;
     int indentBase;
 
+    // Which folders are open, as a sorted list of IDs in the row's owner, and what animates its rows.
+    DWORD expandedOffset, animatorOffset;
+    // A row being dragged: whether it is, its state in the drag, and how far it's moved.
+    DWORD dragActiveOffset, draggedOffset, dragOffsetX, dragOffsetY;
+    // A view's margins, which is one of its properties.
+    DWORD propertiesOffset, marginsKey, marginsName, marginsDeleter, setProperty;
+
     // The caret paints its image turned by progress * turnDegrees, around its middle.
     DWORD caretVtable;
     int caretPaintSlot;

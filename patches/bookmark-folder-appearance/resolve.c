@@ -743,6 +743,76 @@ static const char *ResolveIndent(const Lookup *lookup, Bindings *bindings) {
     return NULL;
 }
 
+// The function that builds the rows is the largest calling the row's indent function. It checks each folder against:
+// mov rdx,[rbx+ids]; mov r8,[rbx+ids+8]
+static const char *ResolveExpanded(const Lookup *lookup, Bindings *bindings) {
+    const RUNTIME_FUNCTION *build = NULL;
+    DWORD begin = bindings->updateIcons - 0x20000, end = bindings->updateIcons;
+    for (DWORD rva = begin; rva + 5 <= end; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (!IsCall(p) || CallTarget(rva, p) != bindings->updateIndent) continue;
+        const RUNTIME_FUNCTION *fn = LookupFunction(lookup, rva);
+        if (fn && (!build || fn->EndAddress - fn->BeginAddress > build->EndAddress - build->BeginAddress)) build = fn;
+    }
+    if (!build) return "the function that builds the rows";
+    // Rows are placed with: mov rcx,[rsi+animator]; test rcx,rcx; jne animate; mov rcx,rdx; mov rdx,r8; call SetBoundsRect
+    for (DWORD rva = begin; rva + 26 <= end && !bindings->animatorOffset; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (memcmp(p, "\x48\x8b\x8e", 3) || memcmp(p + 7, "\x48\x85\xc9\x0f\x85", 5) || memcmp(p + 16, "\x48\x89\xd1\x4c\x89\xc2", 6) || !IsCall(p + 22)) continue;
+        if (CallTarget(rva + 22, p + 22) == bindings->setBoundsRect) bindings->animatorOffset = *(const DWORD *)(p + 3);
+    }
+    if (!bindings->animatorOffset) return "what animates the rows";
+    for (DWORD at = build->BeginAddress; at + 14 <= build->EndAddress; at++) {
+        const BYTE *p = lookup->base + at;
+        if (memcmp(p, "\x48\x8b\x93", 3) || memcmp(p + 7, "\x4c\x8b\x83", 3)) continue;
+        if (*(const DWORD *)(p + 10) != *(const DWORD *)(p + 3) + 8) continue;
+        bindings->expandedOffset = *(const DWORD *)(p + 3);
+        return NULL;
+    }
+    return "the list of open folders";
+}
+
+// The row's background tests that it's selected and then that it's dragged: cmp byte [rbx+selected],0; ...; cmp byte [rbx+dragged],1
+// Whether a drag is active and how far it's moved sit on either side of that, where the function setting them keeps them.
+static const char *ResolveDrag(const Lookup *lookup, Bindings *bindings) {
+    const ULONGLONG *vtable = LookupRva(lookup, bindings->rowVtable);
+    DWORD method = LookupPointerRva(lookup, vtable + bindings->paintBackgroundSlot);
+    const RUNTIME_FUNCTION *fn = method ? LookupFunction(lookup, method) : NULL;
+    if (!fn) return "the row's background";
+    BYTE selected[6] = {0x80, 0xbb};
+    memcpy(selected + 2, &bindings->selectedOffset, 4);
+    DWORD at = FindBytes(lookup, fn->BeginAddress, fn->EndAddress, selected, sizeof selected);
+    if (!at) return "how a row is dragged";
+    DWORD next = FindBytes(lookup, at + 7, at + 40, "\x80\xbb", 2);
+    if (!next || lookup->base[next + 6] != 1) return "how a row is dragged";
+    bindings->draggedOffset = *(const DWORD *)(lookup->base + next + 2);
+    bindings->dragActiveOffset = bindings->draggedOffset - 1;
+    bindings->dragOffsetX = bindings->draggedOffset + 4;
+    bindings->dragOffsetY = bindings->draggedOffset + 8;
+    return NULL;
+}
+
+// lea rdx,[key]; lea r8,["kMarginsKey"]; lea r9,[deleter]; mov rcx,rsi; call SetPropertyInternal, in the function that
+// shows the row's close button, on the row's own property list: lea rsi,[rax+properties]
+static const char *ResolveMargins(const Lookup *lookup, const RUNTIME_FUNCTION *fn, Bindings *bindings) {
+    static const char name[] = "kMarginsKey";
+    for (DWORD at = fn->BeginAddress; at + 24 <= fn->EndAddress; at++) {
+        const BYTE *p = lookup->base + at;
+        if (memcmp(p, "\x48\x8d\x15", 3) || memcmp(p + 7, "\x4c\x8d\x05", 3) || memcmp(p + 14, "\x4c\x8d\x0d", 3) || !IsCall(p + 24)) continue;
+        DWORD text = at + 14 + *(const INT32 *)(p + 10);
+        if (memcmp(lookup->base + text, name, sizeof name)) continue;
+        bindings->marginsKey = at + 7 + *(const INT32 *)(p + 3);
+        bindings->marginsName = text;
+        bindings->marginsDeleter = at + 21 + *(const INT32 *)(p + 17);
+        bindings->setProperty = CallTarget(at + 24, p + 24);
+        DWORD list = FindBytes(lookup, fn->BeginAddress, at, "\x48\x8d\xb0", 3);
+        if (!list) return "a view's properties";
+        bindings->propertiesOffset = *(const DWORD *)(lookup->base + list + 3);
+        return NULL;
+    }
+    return "kMarginsKey";
+}
+
 // OnPaint: save; movsd xmm1,[rdi+progress]; mulsd xmm1,[degrees]; ...; concat; ImageView::OnPaint; restore.
 static const char *ResolveCaret(const Lookup *lookup, Bindings *bindings) {
     if (!(bindings->caretVtable = LookupClassVtable(lookup, "TabExpandChevronView"))) return "TabExpandChevronView's vtable";
@@ -777,6 +847,7 @@ static const char *ResolveClose(const Lookup *lookup, Bindings *bindings) {
     BYTE load[7] = {0x48, 0x8b, 0x8e};
     memcpy(load + 3, &bindings->caretOffset, 4);
     DWORD end = bindings->updateIcons;
+    const RUNTIME_FUNCTION *showClose = NULL;
     for (DWORD at = FindBytes(lookup, end - 0x1000, end, load, sizeof load); at; at = FindBytes(lookup, at + 1, end, load, sizeof load)) {
         const RUNTIME_FUNCTION *fn = LookupFunction(lookup, at);
         if (!fn) continue;
@@ -784,9 +855,12 @@ static const char *ResolveClose(const Lookup *lookup, Bindings *bindings) {
         if (!hover || !loaded) continue;
         bindings->hoverOffset = *(const DWORD *)(lookup->base + hover + 2);
         bindings->loadedOffset = *(const DWORD *)(lookup->base + loaded + 3);
+        showClose = fn;
         break;
     }
     if (!bindings->hoverOffset) return "when the close button shows";
+    const char *missing = ResolveMargins(lookup, showClose, bindings);
+    if (missing) return missing;
 
     // mov r8d,[rsi+color] ... mov rax,[rsi]; mov rax,[rax+SetImageModel]; mov rcx,rsi; xor edx,edx
     DWORD icon = FindVectorIcon(lookup, "kAsideCloseIcon");
@@ -840,6 +914,8 @@ static const char *ResolveMenu(const Lookup *lookup, Bindings *bindings) {
     if (!LookupVisibility(lookup, &bindings->setVisibleSlot, &visibleOffset)) return "how views are shown and hidden";
     if ((missing = ResolveLayout(lookup, bindings))) return missing;
     if ((missing = ResolveIndent(lookup, bindings))) return missing;
+    if ((missing = ResolveExpanded(lookup, bindings))) return missing;
+    if ((missing = ResolveDrag(lookup, bindings))) return missing;
     if ((missing = ResolveCaret(lookup, bindings))) return missing;
     if ((missing = ResolveClose(lookup, bindings))) return missing;
     bindings->changeIconIcon = IconOr(lookup, "kAsideEmojiAddReactionStrokeIcon", bindings->folderIcon);
