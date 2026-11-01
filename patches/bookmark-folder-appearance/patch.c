@@ -11,8 +11,8 @@
 #define MAX_CONTAINERS 32
 #define MAX_ROWS 4096
 #define GUID_SIZE 36
-#define MAX_CLOSE_BUTTONS 256
 #define BUTTON_STATES 3
+#define CLOSE_BUTTON_SIZE 0x640
 #define CLOSE_ICON_SIZE 16
 #define PLAIN_ALPHA 0x1a000000u
 #define PRESS_METHOD 0x20
@@ -47,13 +47,6 @@ typedef struct {
 typedef struct {
     int x, y, width, height;
 } ViewRect;
-
-// Which icon a close button has been given, if not its own.
-typedef struct {
-    BYTE *button;
-    const void *icon;
-    DWORD color;
-} CloseButton;
 
 typedef void (*DeleteAccepted)(void *state, int result);
 typedef void (*SetViewBounds)(void *view, const ViewRect *rect);
@@ -111,7 +104,7 @@ static const IconEntry *Icons;
 
 // The patch's options.
 static BOOL CaretShown = TRUE, CaretFlipped, BackdropShown = TRUE, BackdropTinted = TRUE;
-static BOOL CloseRemoves, CloseIsMinus;
+static BOOL CloseRemoves, CloseConfirms = TRUE, CloseIsMinus;
 static CaretPosition Position;
 static int ClosedAngle, OpenAngle = 180;
 static int LeftOffset = 14, RightOffset = 6;
@@ -119,8 +112,8 @@ static BOOL Enabled;
 
 static BYTE *DeleteOwner;
 static LONGLONG DeleteNodeId;
-static CloseButton CloseButtons[MAX_CLOSE_BUTTONS];
-static int CloseButtonCount;
+static DWORD CloseIconOffset;
+static BOOL CloseIconUnknown;
 
 // Folders store Aside's group colors, the same values its menu's buttons use.
 static BOOL IsGroupColor(int color) {
@@ -491,12 +484,16 @@ static void DeleteBookmark(void) {
     ((DeleteAccepted)(Base + Native.deleteAccepted))(state, 1);
 }
 
-// What a close button runs. On a bookmark that isn't loaded there's no tab to close, so it deletes the bookmark. That
-// destroys the row and this button, so it waits until the button's press is over.
+// What a close button runs. On a bookmark that isn't loaded there's no tab to close, so it deletes the bookmark. Without
+// asking, that destroys the row and this button, so it waits until the button's press is over.
 static void ClosePressed(void *view, void *a, void *b, void *c) {
     BYTE *row = view;
     BYTE *node = NodeOf(row), *owner = OwnerOf(row);
     if (Enabled && CloseRemoves && !row[Native.loadedOffset] && node && owner && !node[Native.nodeManagedOffset]) {
+        if (CloseConfirms) {
+            MenuAskDeleteBookmark(owner, node);
+            return;
+        }
         DeleteOwner = owner;
         DeleteNodeId = *(const LONGLONG *)(node + Native.nodeIdOffset);
     } else {
@@ -532,6 +529,20 @@ static void SetCloseIcon(BYTE *close, const void *icon, DWORD color) {
     }
 }
 
+// An image button keeps the icon it was given. Finding it straight after setting it shows where it lives.
+static void LearnCloseIcon(const BYTE *close, const void *icon) {
+    for (DWORD offset = 0x200; offset < CLOSE_BUTTON_SIZE; offset += 8) {
+        const void *value;
+        if (!SafeRead(close + offset, &value, sizeof value) || value != icon) continue;
+        CloseIconOffset = offset;
+        ModLog("learned: close button icon +%#lx", offset);
+        return;
+    }
+    // Setting it on every paint would never end, so this goes without.
+    CloseIconUnknown = TRUE;
+    ModLog("couldn't learn the close button's shape, so its icon stays");
+}
+
 // Aside only shows the button on a loaded bookmark, and hides it again when the hover ends either way.
 static void StyleClose(BYTE *row) {
     BYTE *node = NodeOf(row), *close = *(BYTE **)(row + Native.closeOffset);
@@ -543,23 +554,14 @@ static void StyleClose(BYTE *row) {
     }
     if (CloseRemoves) TakeClosePress(row, close);
 
-    const void *icon = CloseIsMinus && loaded && Native.minusIcon ? Base + Native.minusIcon : NULL;
-    DWORD color = *(const DWORD *)(close + Native.closeColorOffset);
-    CloseButton *entry = NULL;
-    for (int i = 0; i < CloseButtonCount && !entry; i++)
-        if (CloseButtons[i].button == close) entry = &CloseButtons[i];
-    if (!entry && !icon) return;
-    if (!entry) {
-        if (CloseButtonCount == MAX_CLOSE_BUTTONS) CloseButtonCount = 0;
-        entry = &CloseButtons[CloseButtonCount++];
-        *entry = (CloseButton){close, NULL, color};
-    }
-    // Aside sets the icon again whenever the button's color changes.
-    if (entry->icon == icon && entry->color == color) return;
-    if (icon) SetCloseIcon(close, icon, color);
+    if (!Native.minusIcon || CloseIconUnknown) return;
+    // Aside gives the button its icon back whenever it likes, so what counts is what the button holds now.
+    const void *minus = Base + Native.minusIcon;
+    BOOL wanted = CloseIsMinus && loaded, has = CloseIconOffset && *(const void *const *)(close + CloseIconOffset) == minus;
+    if (wanted == has || (!wanted && !CloseIconOffset)) return;
+    if (wanted) SetCloseIcon(close, minus, *(const DWORD *)(close + Native.closeColorOffset));
     else ((RowFunction)(Base + Native.closeUpdateImage))(close);
-    entry->icon = icon;
-    entry->color = color;
+    if (!CloseIconOffset) LearnCloseIcon(close, minus);
 }
 
 // Back to exactly what Aside would draw, using its own function and its own color.
@@ -836,6 +838,7 @@ PATCH_OPTION() {
     else if (!strcmp(key, "nesting.left")) LeftOffset = atoi(value);
     else if (!strcmp(key, "nesting.right")) RightOffset = atoi(value);
     else if (!strcmp(key, "bookmark.remove")) CloseRemoves = on;
+    else if (!strcmp(key, "bookmark.confirm")) CloseConfirms = on;
     else if (!strcmp(key, "bookmark.minus")) CloseIsMinus = on;
     else if (!strcmp(key, "indicator.position")) {
         Position = !strcmp(value, "before-icon") ? CARET_BEFORE_ICON : !strcmp(value, "before-name") ? CARET_BEFORE_NAME : !strcmp(value, "after-name") ? CARET_AFTER_NAME : CARET_RIGHT;
@@ -890,15 +893,11 @@ PATCH_DISABLE() {
             if (!IsRow(children[j])) continue;
             RestoreRow(children[j]);
             ((RowFunction)(Base + Native.updateIndent))(children[j]);
+            BYTE *close = *(BYTE **)((BYTE *)children[j] + Native.closeOffset);
+            if (close && Native.minusIcon && CloseIconOffset && *(const void *const *)(close + CloseIconOffset) == Base + Native.minusIcon)
+                ((RowFunction)(Base + Native.closeUpdateImage))(close);
         }
     }
-    for (int i = 0; i < CloseButtonCount; i++) {
-        // A freed button doesn't have a vtable inside Aside any more, or anything else that looks like one.
-        void *vtable;
-        if (CloseButtons[i].icon && SafeRead(CloseButtons[i].button, &vtable, sizeof vtable) && IsInAside(vtable))
-            ((RowFunction)(Base + Native.closeUpdateImage))(CloseButtons[i].button);
-    }
-    CloseButtonCount = 0;
     ArrangeRows();
     ContainerCount = 0;
 }

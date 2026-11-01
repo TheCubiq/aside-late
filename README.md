@@ -218,8 +218,9 @@ Its options arrange every row, folder or not:
 - **The backdrop** can be hidden or untinted. Untinted uses the theme's text color at 10%, which
   contrasts in light and dark mode.
 - **A bookmark's X** is the button Aside shows on a loaded bookmark. Showing it on one that isn't
-  loaded makes it delete, by running the answer to Aside's own "Delete this bookmark?" dialog. On
-  a loaded bookmark it can be a minus, and still does what Aside's X does.
+  loaded makes it delete, through Aside's own "Delete this bookmark?" dialog, or straight to that
+  dialog's answer with **Ask before removing** off. On a loaded bookmark it can be a minus, and
+  still does what Aside's X does.
 
 Nothing is stored per build:
 
@@ -256,6 +257,7 @@ This is later binding than offsets, not real name lookup like Dia's Objective-C 
   the UI thread, the first time.
 - A new window's sidebar draws once before Chats is hidden, so Chats could flash.
 - The icon picker shows names rather than the icons themselves.
-- The X on an unloaded bookmark deletes it with no confirmation, and nothing undoes that here.
+- With **Ask before removing** off, the X on an unloaded bookmark deletes it at once, and nothing
+  undoes that here.
 - Reopening a collapsed sidebar hasn't been tested with `chats`, because UI Automation
   couldn't re-expand it.

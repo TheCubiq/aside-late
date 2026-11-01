@@ -359,6 +359,14 @@ void MenuOpen(BYTE *row, BYTE *owner, const BYTE *node, POINT screen, const Menu
     ShowPopup(&Main, view, row, widget, &at, 0, 0, TRUE);
 }
 
+void MenuAskDeleteBookmark(BYTE *owner, const BYTE *node) {
+    *(LONGLONG *)(owner + Native->bookmarkNodeIdOffset) = *(const LONGLONG *)(node + Native->nodeIdOffset);
+    owner[Native->bookmarkHasNodeOffset] = 1;
+    LONGLONG generation = ++*(LONGLONG *)(owner + Native->bookmarkGenerationOffset);
+    *(int *)(owner + Native->bookmarkCommandOffset) = COMMAND_DELETE;
+    ((MenuClosed)Call(Native->bookmarkMenuClosed))(owner, generation);
+}
+
 void MenuTick(void) {
     for (int i = 0; i < RetiredCount; i++) {
         Popup popup = Retired[i];

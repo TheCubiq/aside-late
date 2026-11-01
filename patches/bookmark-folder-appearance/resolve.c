@@ -414,6 +414,32 @@ static const char *ResolveColorButton(const Lookup *lookup, const RUNTIME_FUNCTI
     return NULL;
 }
 
+// The function goes on to do for a bookmark what it did for a folder: inc qword [rsi+generation], then
+// mov dword [rsi+command],0; mov rax,[rbx+id]; mov [rsi+nodeId],rax; mov byte [rsi+hasNode],1, then the close callback.
+static const char *ResolveBookmarkMenu(const Lookup *lookup, Bindings *bindings) {
+    const RUNTIME_FUNCTION *fn = LookupFunction(lookup, bindings->rightClick);
+    if (!fn) return "the bookmark's menu";
+    DWORD end = fn->EndAddress, sites[2], found = 0;
+    for (DWORD at = fn->BeginAddress; at + 11 <= end && found < 2; at++) {
+        const BYTE *p = lookup->base + at;
+        if (!memcmp(p, "\x48\x8d\x05", 3) && !memcmp(p + 7, "\x49\x89\x45\x20", 4)) sites[found++] = at;
+    }
+    if (found < 2) return "the bookmark's close callback";
+    bindings->bookmarkMenuClosed = sites[1] + 7 + *(const INT32 *)(lookup->base + sites[1] + 3);
+    DWORD inc = FindBytes(lookup, sites[0], sites[1], "\x48\xff\x86", 3);
+    if (!inc) return "the bookmark menu's generation";
+    bindings->bookmarkGenerationOffset = *(const DWORD *)(lookup->base + inc + 3);
+    for (DWORD at = inc; at + 28 <= sites[1]; at++) {
+        const BYTE *p = lookup->base + at;
+        if (memcmp(p, "\xc7\x86", 2) || *(const DWORD *)(p + 6) || memcmp(p + 10, "\x48\x8b\x43", 3) || memcmp(p + 14, "\x48\x89\x86", 3) || memcmp(p + 21, "\xc6\x86", 2) || p[27] != 1) continue;
+        bindings->bookmarkCommandOffset = *(const DWORD *)(p + 2);
+        bindings->bookmarkNodeIdOffset = *(const DWORD *)(p + 17);
+        bindings->bookmarkHasNodeOffset = *(const DWORD *)(p + 23);
+        return NULL;
+    }
+    return "the bookmark menu's command";
+}
+
 // The label leads to where the dialog is built, and the first callback bound after it is its answer:
 // lea rcx,[invoke]; mov [rax+8],rcx, with the owner and the node's ID stored at +30h and +38h.
 static const char *ResolveBookmarkDelete(const Lookup *lookup, Bindings *bindings) {
@@ -791,6 +817,7 @@ static DWORD IconOr(const Lookup *lookup, const char *name, DWORD fallback) {
 static const char *ResolveMenu(const Lookup *lookup, Bindings *bindings) {
     const char *missing = ResolveRightClick(lookup, bindings);
     if (missing) return missing;
+    if ((missing = ResolveBookmarkMenu(lookup, bindings))) return missing;
     if ((missing = ResolveBookmarkDelete(lookup, bindings))) return missing;
     const RUNTIME_FUNCTION *show = NULL;
     DWORD strings[4];

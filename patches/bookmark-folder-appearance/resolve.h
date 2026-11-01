@@ -36,6 +36,9 @@ typedef struct {
     DWORD ownerCommandOffset, ownerNodeIdOffset, ownerHasNodeOffset, ownerGenerationOffset;
     DWORD menuClosed;          // Runs the command once a folder's menu has closed.
     DWORD deleteAccepted;      // What Aside's "Delete this bookmark?" runs with the answer.
+    // A bookmark's own menu has the same state beside the folder's, and its own function to run it.
+    DWORD bookmarkMenuClosed;
+    DWORD bookmarkCommandOffset, bookmarkNodeIdOffset, bookmarkHasNodeOffset, bookmarkGenerationOffset;
 
     // Parts of Aside's tab group menu, read out of the function that builds it.
     DWORD operatorNew, operatorDelete;

@@ -18,5 +18,7 @@ typedef struct {
 void MenuInit(const Bindings *bindings, BYTE *base, DWORD childCountOffset);
 // Shows the menu for a row, at a point in screen coordinates. The owner receives its commands.
 void MenuOpen(BYTE *row, BYTE *owner, const BYTE *node, POINT screen, const MenuChoices *choices);
+// Asks Aside's own "Delete this bookmark?", through the command the bookmark's menu would run.
+void MenuAskDeleteBookmark(BYTE *owner, const BYTE *node);
 // Finishes what can't be done while a closing widget is still on the stack.
 void MenuTick(void);
