@@ -212,11 +212,21 @@ Its options arrange every row, folder or not:
   from its layout's left inset and from its own width, so those are changed around that call. The
   row and its container paint the highlight and outline around the row's bounds, so a nested row's
   bounds are nested for those two calls, and Aside draws them itself.
+- **Bottom offset** is extra margin on the last row inside a folder that has a backdrop. It's set
+  before the container measures or lays out, so Aside's own animation heads for the right place.
+- **Collapsed loaded nesting** builds on Aside keeping a loaded row, and every folder above it,
+  when a folder folds. It hides those folders and indents the row one level under the folded one.
+- **A dragged row** takes the nesting of the row after the spot it's over, and the top level
+  below the last row.
 - **The caret** is moved with `View::SetBoundsRect` once the row has laid itself out. Its paint
   turns the image by a progress value times 180°, so setting that value just before it paints
   gives any two angles, either direction and Aside's own animation.
 - **The backdrop** can be hidden or untinted. Untinted uses the theme's text color at 10%, which
-  contrasts in light and dark mode.
+  contrasts in light and dark mode. Aside animates rows with a transform and only changes their
+  bounds at the end, so a backdrop's position comes from each row's record in Aside's animator.
+  Aside removes a folded folder's rows at once, so its height eases on its own along about the
+  same curve. A dragged folder's backdrop moves by the row's drag offset.
+- **A folder's hover highlight** is off by default, by not counting it as hovered while it paints.
 - **A bookmark's X** is the button Aside shows on a loaded bookmark. Showing it on one that isn't
   loaded makes it delete, through Aside's own "Delete this bookmark?" dialog, or straight to that
   dialog's answer with **Ask before removing** off. On a loaded bookmark it can be a minus, and
@@ -257,6 +267,8 @@ This is later binding than offsets, not real name lookup like Dia's Objective-C 
   the UI thread, the first time.
 - A new window's sidebar draws once before Chats is hidden, so Chats could flash.
 - The icon picker shows names rather than the icons themselves.
+- A backdrop's height follows its own timing rather than Aside's animation, so it can be a few
+  pixels from the rows beside it while they move. Its position is exact.
 - With **Ask before removing** off, the X on an unloaded bookmark deletes it at once, and nothing
   undoes that here.
 - Reopening a collapsed sidebar hasn't been tested with `chats`, because UI Automation
