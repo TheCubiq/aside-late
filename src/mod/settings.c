@@ -154,6 +154,8 @@ static const wchar_t *Redirect(const wchar_t *path, wchar_t *out, wchar_t *clean
         if (!wcsncmp(request, L"set\\", 4) || !wcsncmp(request, L"install\\", 8) || !wcsncmp(request, L"remove\\", 7) || !wcsncmp(request, L"repo\\", 5)) {
             RunRequest(request);
             HomePath(out, L"web\\ok.txt");
+        } else if (PublishedPath(request, out)) {
+            // The newest version.
         } else if (!wcscmp(request, L"repos.txt")) {
             HomePath(out, L"repos.txt");
             if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) WriteWhole(out, "", 0);

@@ -183,13 +183,12 @@ static void WriteJsonText(FILE *file, const char *text) {
     fputc('"', file);
 }
 
-// For the settings page. It's replaced in one go so the page never reads half of it.
+// For the settings page.
 void SavePatchList(void) {
-    wchar_t path[PATH_SIZE], temporary[PATH_SIZE];
-    HomePathW(path, L"web\\patches.json");
-    swprintf(temporary, PATH_SIZE, L"%ls.new", path);
+    wchar_t path[PATH_SIZE];
+    PublishPath(path);
     EnterCriticalSection(&Lock);
-    FILE *file = _wfopen(temporary, L"w");
+    FILE *file = _wfopen(path, L"w");
     if (file) {
         fprintf(file, "{\"safeMode\":%s,\"patches\":[", SafeMode ? "true" : "false");
         for (int i = 0; i < PatchCount; i++) {
@@ -214,18 +213,18 @@ void SavePatchList(void) {
         }
         fputs("]}\n", file);
         fclose(file);
-        MoveFileExW(temporary, path, MOVEFILE_REPLACE_EXISTING);
+        PublishCommit(L"patches.json", path);
+    } else {
+        ModLog("couldn't save the patch list");
     }
     LeaveCriticalSection(&Lock);
 }
 
 // A patch being installed for the first time has no row yet, so the page follows this instead.
 static void SaveInstallState(const char *id, const char *state, const char *text) {
-    wchar_t path[PATH_SIZE];
-    HomePathW(path, L"web\\install.txt");
     char line[TEXT_SIZE + ID_SIZE + 16];
     int size = snprintf(line, sizeof line, "%s\t%s\t%s", id, state, text);
-    WriteWholeFile(path, line, min(size, (int)sizeof line - 1));
+    PublishFile(L"install.txt", line, min(size, (int)sizeof line - 1));
 }
 
 void SetPatchProgress(const char *id, const char *text) {

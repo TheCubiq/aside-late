@@ -16,6 +16,14 @@ BOOL WriteWholeFile(const wchar_t *path, const void *data, size_t size);
 // The whole file with a NUL after it, for free(), or NULL.
 char *ReadWholeFile(const wchar_t *path, size_t *size);
 
+// Files the page reads while they change. Aside can have a file open at any moment, and then it can't
+// be replaced, so each version is a new file and the page's path leads to the newest.
+void PublishStart(void);
+void PublishPath(wchar_t *out);
+void PublishCommit(const wchar_t *name, const wchar_t *path);
+void PublishFile(const wchar_t *name, const void *data, size_t size);
+BOOL PublishedPath(const wchar_t *name, wchar_t *out);
+
 BOOL LookupInit(Lookup *lookup, BYTE *base, ULONGLONG pointerBase);
 void LookupFree(Lookup *lookup);
 // A clean copy of a DLL read from disk, indexed for lookups. BuildLookup is for the Aside.dll that's loaded.
