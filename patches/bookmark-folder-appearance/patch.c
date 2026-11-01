@@ -326,7 +326,9 @@ static BOOL LearnParent(const BYTE *row) {
 // The row points at its BookmarkNode: the object with a GUID whose parent's children include it.
 static BOOL LearnNode(const BYTE *row) {
     char guid[GUID_SIZE];
-    for (DWORD node = Native.boundsOffset; node < SCAN_LIMIT; node += 8) {
+    // A row holds more than one thing of this shape once it's loaded. Its own node is stored just before its depth.
+    for (DWORD at = Native.boundsOffset - 8; at < SCAN_LIMIT; at += 8) {
+        DWORD node = at < Native.boundsOffset ? Native.depthOffset - 8 : at;
         BYTE *candidate;
         if (!SafeRead(row + node, &candidate, sizeof candidate) || !candidate) continue;
         for (DWORD uuid = 8; uuid < 0x200; uuid += 8) {
