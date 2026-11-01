@@ -104,9 +104,16 @@ BOOL EditCode(void *at, const void *before, const void *after, size_t size) {
     BYTE *start = at;
     EnterCriticalSection(&Lock);
     BOOL done = FALSE;
-    if (EditCount == MAX_EDITS || memcmp(start, before, size)) goto out;
-    for (int i = 0; i < EditCount; i++)
-        if (start < Edits[i].at + Edits[i].size && Edits[i].at < start + size) goto out;
+    if (memcmp(start, before, size)) goto out;
+    for (int i = 0; i < EditCount; i++) {
+        if (start >= Edits[i].at + Edits[i].size || Edits[i].at >= start + size) continue;
+        // Editing something back to what it was takes the edit away.
+        if (Edits[i].at != start || Edits[i].size != size || Edits[i].owner != owner || memcmp(Edits[i].before, after, size)) goto out;
+        done = WriteCode(start, after, size);
+        if (done) Edits[i] = Edits[--EditCount];
+        goto out;
+    }
+    if (EditCount == MAX_EDITS) goto out;
     if (!WriteCode(start, after, size)) {
         ModLog("couldn't write to code at %p (error %lu)", start, GetLastError());
         goto out;

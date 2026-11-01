@@ -95,7 +95,7 @@ Patches run inside the browser with no limits. What the SDK adds:
 | --- | --- |
 | `HookVtable` | Replace a method on every object of a class, including ones that already exist |
 | `HookImport` | Replace what a module calls when it uses an import |
-| `EditCode` | Write over Aside's code, if it holds the bytes expected |
+| `EditCode` | Write over Aside's code, if it holds the bytes expected. Editing it back takes the edit away |
 | `FindObjects` | Find the live objects of a class, by looking for its vtable in the heap |
 | `RunOnUiThread` | Run something on the browser's UI thread |
 | `Lookup*` | Find classes, strings, functions, method slots and how views hide, by what stays the same |

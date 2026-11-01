@@ -31,7 +31,8 @@ SDK void HomeFile(const char *name, char *out, size_t size);
 SDK BOOL HookVtable(void **vtable, int slot, void *replacement, void **original);
 // Replaces what one module calls when it uses a function it imports. Others are unaffected.
 SDK BOOL HookImport(BYTE *module, const char *dll, const char *name, void *replacement, void **original);
-// Writes over Aside's code, if it holds the bytes expected and no other patch has edited them.
+// Writes over Aside's code, if it holds the bytes expected and no other patch has edited them. Editing it
+// back to the original bytes takes the edit away.
 SDK BOOL EditCode(void *at, const void *before, const void *after, size_t size);
 
 // Runs a function on the browser's UI thread and waits for it.
