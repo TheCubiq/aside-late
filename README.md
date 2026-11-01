@@ -206,15 +206,20 @@ icon picker, a reset, and the folder's own Rename, Delete and Manage Bookmarks. 
 folder and its open contents get a rounded tint, and its icon and title take the color.
 Choices are kept by folder GUID in `folders.tsv` in the home folder.
 
-Its options arrange every folder, colored or not:
+Its options arrange every row, folder or not:
 
-- **The caret** can be hidden or moved. The caret and title are moved just before they paint, by
-  changing their bounds, and the row's next layout puts them back. The icon has a layer, which
-  that can't move, so a caret before the icon is the two views swapping what they show.
-- **Angles** rotate the caret's own path in 90° steps, which needs no drawing API. Aside's caret
-  view turns its image a half turn when a folder is open, so the image allows for that.
-- **The backdrop** can be hidden, and its offsets at each nesting level changed. They move the
-  tint and not the rows.
+- **Nesting** sets how far each level moves its children from either side. The row's Layout works
+  from its layout's left inset and from its own width, so those are changed around that call. The
+  row and its container paint the highlight and outline around the row's bounds, so a nested row's
+  bounds are nested for those two calls, and Aside draws them itself.
+- **The caret** is moved with `View::SetBoundsRect` once the row has laid itself out. Its paint
+  turns the image by a progress value times 180°, so setting that value just before it paints
+  gives any two angles, either direction and Aside's own animation.
+- **The backdrop** can be hidden or untinted. Untinted uses the theme's text color at 10%, which
+  contrasts in light and dark mode.
+- **A bookmark's X** is the button Aside shows on a loaded bookmark. Showing it on one that isn't
+  loaded makes it delete, by running the answer to Aside's own "Delete this bookmark?" dialog. On
+  a loaded bookmark it can be a minus, and still does what Aside's X does.
 
 Nothing is stored per build:
 
@@ -251,11 +256,6 @@ This is later binding than offsets, not real name lookup like Dia's Objective-C 
   the UI thread, the first time.
 - A new window's sidebar draws once before Chats is hidden, so Chats could flash.
 - The icon picker shows names rather than the icons themselves.
-- A folder counts as open when something inside it is showing. An open empty folder's caret is a
-  half turn off, unless the angles are the defaults.
-- With custom angles, the caret's image changes at once as a folder opens, during Aside's own animation.
-- With the caret before the icon, a folder icon whose path can't be turned turns upside down
-  while the folder is open. `mod.log` names any such icon. None has been seen, but only the
-  default folder icon and the rocket were tested.
+- The X on an unloaded bookmark deletes it with no confirmation, and nothing undoes that here.
 - Reopening a collapsed sidebar hasn't been tested with `chats`, because UI Automation
   couldn't re-expand it.
