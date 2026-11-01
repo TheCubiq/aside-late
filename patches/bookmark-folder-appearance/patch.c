@@ -89,9 +89,10 @@ typedef struct {
 } Ghost;
 
 // A backdrop's height as it's shown on the way to what it should be. Aside removes a folded folder's rows at once, so
-// it can't just follow them.
+// it can't just follow them. It belongs to the folder's node: most rebuilds make every row again, and often at the same
+// addresses in another order, so a row's address says nothing about what it showed.
 typedef struct {
-    const BYTE *row;
+    const BYTE *node;
     int from, to, shown;
     ULONGLONG start;
 } BlockMotion;
@@ -843,17 +844,17 @@ static int FooterOf(void **children, size_t count, size_t index) {
 }
 
 // From wherever it's showing now, so turning back halfway stays smooth, on about the curve Aside moves its rows along.
-static int ShownHeight(const BYTE *row, int target, int firstHeight, BOOL jump) {
+static int ShownHeight(const BYTE *node, int target, int firstHeight, BOOL jump) {
     BlockMotion *motion = NULL;
     for (int i = 0; i < MotionCount && !motion; i++)
-        if (Motions[i].row == row) motion = &Motions[i];
+        if (Motions[i].node == node) motion = &Motions[i];
     ULONGLONG now = GetTickCount64();
     if (!motion) {
         if (MotionCount == MAX_MOTIONS) MotionCount = 0;
         motion = &Motions[MotionCount++];
-        *motion = (BlockMotion){row, firstHeight, target, firstHeight, now};
+        *motion = (BlockMotion){node, firstHeight, target, firstHeight, now};
     }
-    if (jump) *motion = (BlockMotion){row, target, target, target, now};
+    if (jump) *motion = (BlockMotion){node, target, target, target, now};
     if (motion->to != target) {
         motion->from = motion->shown;
         motion->to = target;
@@ -932,7 +933,7 @@ static void PaintFolders(BYTE *container, void *canvas) {
         BOOL dragged = row[Native.dragActiveOffset];
         // A row Aside is still bringing in grows from itself. Anything already there has nowhere it was coming from.
         int target = bottom - end.top + FooterOf(children, count, i);
-        int height = ShownHeight(row, target, moving ? rowHeight : target, dragged);
+        int height = ShownHeight(NodeOf(row), target, moving ? rowHeight : target, dragged);
         block.bottom = block.top + height;
         if (dragged) {
             block.left += *(const int *)(row + Native.dragOffsetX);
