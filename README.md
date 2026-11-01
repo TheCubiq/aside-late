@@ -216,8 +216,13 @@ Its options arrange every row, folder or not:
   before the container measures or lays out, so Aside's own animation heads for the right place.
 - **Collapsed loaded nesting** builds on Aside keeping a loaded row, and every folder above it,
   when a folder folds. It hides those folders and indents the row one level under the folded one,
-  moving its parts there gradually. A hidden row is kept at the bottom of that folder with no
-  height, which is where Aside starts a new row, because Aside animates a row from wherever it last was.
+  moving its parts there gradually. Aside animates a row from wherever it last was, so a hidden row is
+  kept with no height just above the first row inside it, and comes out from there.
+- **Unloading from a collapsed folder** is animated by holding back the rebuild it causes. Closing a tab
+  rebuilds the rows with no animation, a moment later. While Aside's own guard against rebuilding during a
+  rebuild is up, that only notes it's wanted, so the patch lowers the guard and runs an animated one itself.
+- **The unload button** is a folder row's own close button, shown while it's hovered and there's a loaded
+  tab inside. Aside puts a close button last and moves a caret aligned right before it, so those two swap.
 - **Selected tab first when collapsed** is what Aside does on its own: a folded folder lists its
   active tab first, and then the last one it was. Off, a jump over that code leaves bookmark order.
 - **A dragged row** takes the nesting of the row after the spot it's over, and the top level
@@ -229,7 +234,8 @@ Its options arrange every row, folder or not:
   contrasts in light and dark mode. Aside animates rows with a transform and only changes their
   bounds at the end, so a backdrop's position comes from each row's record in Aside's animator.
   Aside removes a folded folder's rows at once, so its height eases on its own along about the
-  same curve. A dragged folder's backdrop moves by the row's drag offset.
+  same curve. That height belongs to the folder's node, because most rebuilds make every row again, often
+  at the same addresses in another order. A dragged folder's backdrop moves by the row's drag offset.
 - **A folding folder's rows** are ones Aside deletes at the end of its rebuild, or folders that
   **Collapsed loaded nesting** just hid. The row's deleting destructor holds on to the first kind when
   a rebuild called it, and the container paints the icon, title and caret of both, clipped to what
@@ -259,7 +265,8 @@ Nothing is stored per build:
   but it shows each control's size, vtables and constructor, and how a popup is made.
 - **Object layouts** are learned from the first row that paints, by shape: a parent lists
   the row among its children, a node holds a GUID and is listed by its parent, and an image
-  view holds the icon and color it was just given.
+  view holds the icon and color it was just given. Aside has measured the rows by then, without their
+  margins, so they're built once more.
 - **Colors** are Aside's theme colors, so they follow light and dark mode. A small switch
   maps each group color to its background ID, with the icon and title IDs just before it.
   `Background::Paint` shows how to resolve an ID, for the tint's own alpha.
@@ -279,6 +286,7 @@ This is later binding than offsets, not real name lookup like Dia's Objective-C 
 - The icon picker shows names rather than the icons themselves.
 - A backdrop's height follows its own timing rather than Aside's animation, so it can be a few
   pixels from the rows beside it while they move. Its position is exact.
+- Only the X and the unload button animate an unload. A tab closed any other way goes as it does in Aside.
 - With **Ask before removing** off, the X on an unloaded bookmark deletes it at once, and nothing
   undoes that here.
 - Reopening a collapsed sidebar hasn't been tested with `chats`, because UI Automation
