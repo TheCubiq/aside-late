@@ -49,8 +49,8 @@ Needs MinGW-w64 `gcc`:
 make
 ```
 
-A running patched Aside locks `build\aside-late-mod.dll`. Quit it first, or build elsewhere
-with `make BUILD=build/next`.
+This works while a patched Aside is running. That Aside keeps what it has loaded, and the next
+launch uses the new build.
 
 ## Patches
 
