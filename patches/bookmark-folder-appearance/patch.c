@@ -44,6 +44,8 @@ typedef struct {
     unsigned lastBounds;
 } Container;
 
+typedef enum { HOVER_NEVER, HOVER_COLLAPSED, HOVER_ALWAYS } FolderHoverMode;
+
 typedef enum { CARET_RIGHT, CARET_BEFORE_ICON, CARET_BEFORE_NAME, CARET_AFTER_NAME } CaretPosition;
 
 typedef struct {
@@ -133,7 +135,8 @@ static const IconEntry *Icons;
 // The patch's options.
 static BOOL CaretShown = TRUE, CaretFlipped, BackdropShown = TRUE, BackdropTinted = TRUE;
 static BOOL CloseRemoves, CloseConfirms = TRUE, CloseIsMinus;
-static BOOL LoadedRise, FolderHover;
+static BOOL LoadedRise;
+static FolderHoverMode FolderHover;
 static int BottomOffset = 4;
 static CaretPosition Position;
 static int ClosedAngle, OpenAngle = 180;
@@ -550,9 +553,9 @@ static void RowPaint(void *view, void *canvas) {
         ((SizeChanged)rowVtable[Native.sizeChangedSlot])(row);
     }
     // A folder's own hover is drawn with the row's, so for this long it isn't hovered.
-    const BYTE *node = Learned ? NodeOf(row) : NULL;
+    const BYTE *node = Learned ? NodeOf(row) : NULL, *owner = node ? OwnerOf(row) : NULL;
     BYTE hovered = row[Native.hoverOffset];
-    if (!FolderHover && node && *(const int *)(node + Native.nodeTypeOffset)) row[Native.hoverOffset] = 0;
+    if (node && *(const int *)(node + Native.nodeTypeOffset) && (FolderHover == HOVER_NEVER || (FolderHover == HOVER_COLLAPSED && owner && FolderIsOpen(owner, node)))) row[Native.hoverOffset] = 0;
     if ((!left && !right) || width <= left + right) {
         OriginalRowPaint(view, canvas);
         row[Native.hoverOffset] = hovered;
@@ -1145,7 +1148,7 @@ PATCH_OPTION() {
     else if (!strcmp(key, "nesting.right")) RightOffset = atoi(value);
     else if (!strcmp(key, "nesting.bottom")) BottomOffset = atoi(value);
     else if (!strcmp(key, "nesting.loaded")) LoadedRise = on;
-    else if (!strcmp(key, "backdrop.hover")) FolderHover = on;
+    else if (!strcmp(key, "backdrop.hover")) FolderHover = on ? HOVER_ALWAYS : !strcmp(value, "collapsed") ? HOVER_COLLAPSED : HOVER_NEVER;
     else if (!strcmp(key, "bookmark.remove")) CloseRemoves = on;
     else if (!strcmp(key, "bookmark.confirm")) CloseConfirms = on;
     else if (!strcmp(key, "bookmark.minus")) CloseIsMinus = on;
