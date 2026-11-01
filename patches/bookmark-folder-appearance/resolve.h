@@ -65,6 +65,10 @@ typedef struct {
     DWORD getColor;            // ColorProvider::GetColor.
     DWORD widgetThemeOffset, themeProviderOffset;  // How a widget gives its ColorProvider.
 
+    // What a view's own size is, and how it's told that changed.
+    int calculateSizeSlot, sizeChangedSlot;
+    DWORD unboundedSize;       // The SizeBounds with no limits that the calculation is usually given.
+
     // By name, each falling back to the folder icon.
     DWORD changeIconIcon, resetIcon, renameIcon, deleteIcon, manageIcon;
 } Bindings;

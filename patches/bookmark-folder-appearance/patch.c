@@ -1,5 +1,5 @@
-// Colors bookmark folders and changes their icons. Aside's classes and methods are bound by name in resolve.c, and
-// the shape of its objects is learned here from the first row that paints.
+// Colors bookmark folders and changes their icons, and lets the caret and the tint be arranged. Aside's classes and
+// methods are bound by name in resolve.c, and the shape of its objects is learned here from the first row that paints.
 
 #include "resolve.h"
 
@@ -11,7 +11,7 @@
 #define MAX_CONTAINERS 32
 #define MAX_ROWS 4096
 #define GUID_SIZE 36
-#define INDENT 14
+#define MAX_ROTATED 256
 #define CORNER_RADIUS 8.0f
 #define TICK_MS 16
 #define SCAN_LIMIT 0x700
@@ -33,6 +33,26 @@ typedef struct {
     unsigned lastBounds;
 } Container;
 
+typedef enum { CARET_RIGHT, CARET_BEFORE_ICON, CARET_BEFORE_NAME, CARET_AFTER_NAME } CaretPosition;
+
+// gfx::VectorIcon, whose path is a list of 32-bit commands and floats.
+typedef struct {
+    const DWORD *path;
+    size_t size;
+} IconRep;
+
+typedef struct {
+    const IconRep *reps;
+    size_t count;
+    const char *name;
+} VectorIcon;
+
+typedef struct {
+    int width, height;
+} ViewSize;
+
+typedef void (*CalculateSize)(const void *view, ViewSize *size, const void *bounds);
+typedef void (*SizeChanged)(void *view);
 typedef void (*CreateRounded)(void **result, ULONGLONG color, float radius, int inset);
 typedef void (*SchedulePaint)(void *view);
 typedef void (*Paint)(void *self, void *canvas, void *view);
@@ -70,6 +90,17 @@ static void *Rounded;
 static UINT_PTR Timer;
 
 static const IconEntry *Icons;
+
+// The patch's options.
+static BOOL CaretShown = TRUE, BackdropShown = TRUE;
+static CaretPosition Position;
+static int ClosedAngle, OpenAngle;
+static int LeftOffset = 14, RightOffset = 6;
+static BOOL Enabled;
+
+// The gaps Aside leaves around the title, from a row as it laid it out.
+static int IconGap, CaretGap, CaretWidth;
+static BOOL LearnedGaps;
 // Folders store Aside's group colors, the same values its menu's buttons use.
 static BOOL IsGroupColor(int color) {
     return color >= 0 && color < GROUP_COLOR_COUNT && Native.groupBackgrounds[color];
@@ -303,6 +334,68 @@ static void LearnImageShape(const BYTE *view, const void *icon, ULONGLONG color)
     ModLog("couldn't learn the image view's shape");
 }
 
+// A path's commands are small numbers and its coordinates are floats, so a command's arguments can be told
+// apart in any build. Arguments in pairs are x,y. A lone one is a horizontal or vertical line, whose direction
+// only doesn't matter for a half turn. NULL if the path has anything else, or isn't all absolute coordinates.
+static const VectorIcon *RotateIcon(const VectorIcon *icon, int angle) {
+    IconRep *reps = malloc(icon->count * sizeof *reps);
+    VectorIcon *rotated = malloc(sizeof *rotated);
+    for (size_t i = 0; i < icon->count; i++) {
+        const DWORD *path = icon->reps[i].path;
+        size_t size = icon->reps[i].size;
+        if (size < 2 || !path[0] || path[0] >= 64) return NULL;
+        DWORD *copy = malloc(size * sizeof *copy);
+        memcpy(copy, path, size * sizeof *copy);
+        float canvas = *(const float *)&path[1];
+        for (size_t at = 2; at < size;) {
+            if (path[at] && path[at] < 64) {
+                at++;
+                continue;
+            }
+            size_t count = 0;
+            while (at + count < size && (!path[at + count] || path[at + count] >= 64)) count++;
+            if (count % 2 && !(count == 1 && angle == 180)) return NULL;
+            for (size_t j = 0; j < count; j++) {
+                float value = *(const float *)&path[at + j];
+                if (value < 0 || value > canvas) return NULL;
+            }
+            if (count == 1) {
+                float value = canvas - *(const float *)&path[at];
+                memcpy(&copy[at], &value, sizeof value);
+            }
+            for (size_t j = 0; count > 1 && j < count; j += 2) {
+                float x = *(const float *)&path[at + j], y = *(const float *)&path[at + j + 1];
+                float newX = angle == 90 ? canvas - y : angle == 180 ? canvas - x : y;
+                float newY = angle == 90 ? x : angle == 180 ? canvas - y : canvas - x;
+                memcpy(&copy[at + j], &newX, sizeof newX);
+                memcpy(&copy[at + j + 1], &newY, sizeof newY);
+            }
+            at += count;
+        }
+        reps[i] = (IconRep){copy, size};
+    }
+    *rotated = (VectorIcon){reps, icon->count, icon->name};
+    return rotated;
+}
+
+// An icon at an angle, kept for good. One that can't be rotated stays as it is.
+static const void *Rotated(const void *icon, int angle) {
+    static struct {
+        const void *icon, *result;
+        int angle;
+    } kept[MAX_ROTATED];
+    static int count;
+    angle = ((angle % 360) + 360) % 360;
+    if (!angle) return icon;
+    for (int i = 0; i < count; i++)
+        if (kept[i].icon == icon && kept[i].angle == angle) return kept[i].result;
+    if (count == MAX_ROTATED) return icon;
+    const void *result = RotateIcon(icon, angle);
+    if (!result) ModLog("couldn't rotate the icon named %s", ((const VectorIcon *)icon)->name);
+    kept[count++] = (typeof(kept[0])){icon, result ? result : icon, angle};
+    return kept[count - 1].result;
+}
+
 static BOOL ImageIsCurrent(const BYTE *view, const void *icon, ULONGLONG color) {
     return *(const void *const *)(view + ImageIconOffset) == icon && *(const ULONGLONG *)(view + ImageColorOffset) == color;
 }
@@ -314,22 +407,83 @@ static void SetRowTitleColor(const BYTE *row, ULONGLONG color) {
     ((SetTitleColor)vtable[Native.setTitleColorOffset / 8])(title, color);
 }
 
+static BOOL IsOpen(void **children, size_t count, size_t index, RECT *bottom);
+
+static BOOL RowIsOpen(const BYTE *row) {
+    BYTE *parent = *(BYTE **)(row + ParentOffset);
+    if (!parent) return FALSE;
+    size_t count;
+    void **children = ChildrenOf(parent, &count);
+    for (size_t i = 0; i < count; i++)
+        if (children[i] == row) return IsOpen(children, count, i, NULL);
+    return FALSE;
+}
+
 // Runs on every paint, so it only touches what's out of date. Setting an image repaints.
+//
+// The icon view has a layer of its own and can't be moved by moving its bounds, so a caret before the icon is the
+// two views swapping what they show. The caret view turns whatever it shows a half turn when a folder is open, so
+// anything it's given is turned the other way first.
 static void StyleRow(BYTE *row) {
     BYTE *node = NodeOf(row);
-    const Folder *folder = node ? FindFolder(GuidOf(node)) : NULL;
-    if (!folder) return;
-    // Icons are themed like Aside's own until the folder has a color.
-    ULONGLONG color = folder->color >= 0 ? IconColor(folder->color) : Native.themedColorId - row[Native.selectedOffset];
-    const void *glyph = folder->icon >= 0 ? Icons[folder->icon].icon : Base + Native.folderIcon;
-    const void *caretGlyph = Base + Native.caretIcon;
+    if (!node || !*(const int *)(node + Native.nodeTypeOffset)) return;
     BYTE *leading = *(BYTE **)(row + Native.leadingOffset), *caret = *(BYTE **)(row + Native.caretOffset);
     if (!leading) return;
-    if (ImageIconOffset && ImageIsCurrent(leading, glyph, color) && (!caret || ImageIsCurrent(caret, caretGlyph, color))) return;
-    SetImageView(leading, glyph, color);
-    if (!ImageIconOffset) LearnImageShape(leading, glyph, color);
-    if (caret) SetImageView(caret, caretGlyph, color);
-    if (folder->color >= 0) SetRowTitleColor(row, TitleColor(folder->color));
+    const Folder *folder = FindFolder(GuidOf(node));
+    // Icons are themed like Aside's own until the folder has a color.
+    ULONGLONG color = folder && folder->color >= 0 ? IconColor(folder->color) : Native.themedColorId - row[Native.selectedOffset];
+    const void *icon = folder && folder->icon >= 0 ? Icons[folder->icon].icon : Base + Native.folderIcon;
+    const void *native = Base + Native.caretIcon;
+    BOOL open = RowIsOpen(row), swapped = CaretShown && Position == CARET_BEFORE_ICON;
+    int angle = open ? OpenAngle : ClosedAngle, turn = open ? 180 : 0;
+    const void *first = swapped ? Rotated(native, angle) : icon;
+    const void *second = swapped ? Rotated(icon, turn) : Rotated(native, angle + turn);
+    if (!ImageIconOffset || !ImageIsCurrent(leading, first, color)) {
+        SetImageView(leading, first, color);
+        if (!ImageIconOffset) LearnImageShape(leading, first, color);
+        if (folder && folder->color >= 0) SetRowTitleColor(row, TitleColor(folder->color));
+    }
+    if (caret && !ImageIsCurrent(caret, second, color)) SetImageView(caret, second, color);
+}
+
+// Moves a view without telling it, which is all painting needs. A row laying itself out again puts its children
+// back and repaints what it moved, and the next paint moves them again. That also makes the title elide its text again.
+static void PlaceView(BYTE *view, int x, int width) {
+    int *bounds = (int *)(view + Native.boundsOffset);
+    bounds[0] = x;
+    bounds[2] = width;
+}
+
+// Runs before the row's children paint, so they're drawn where they end up. The row's own edges stay wherever
+// Aside put them, which also means this can run again on a row it already moved.
+static void PlaceCaret(BYTE *row) {
+    BYTE *leading = *(BYTE **)(row + Native.leadingOffset), *caret = *(BYTE **)(row + Native.caretOffset), *title = *(BYTE **)(row + Native.titleOffset);
+    if (!leading || !caret || !title || !IsVisible(caret)) return;
+    const int *icon = (const int *)(leading + Native.boundsOffset), *name = (const int *)(title + Native.boundsOffset), *mark = (const int *)(caret + Native.boundsOffset);
+    if (!LearnedGaps) {
+        if (icon[2] <= 0 || name[2] <= 0 || mark[2] <= 0) return;
+        IconGap = name[0] - (icon[0] + icon[2]);
+        CaretGap = mark[0] - (name[0] + name[2]);
+        CaretWidth = mark[2];
+        LearnedGaps = TRUE;
+    }
+    if (CaretShown && Position == CARET_RIGHT) return;
+    int end = max(name[0] + name[2], mark[0] + mark[2]);
+    int nameX = icon[0] + icon[2] + IconGap, caretX, nameEnd = end;
+    if (!CaretShown) {
+        caretX = end;
+    } else if (Position == CARET_AFTER_NAME) {
+        ViewSize size = {0};
+        void **vtable = *(void ***)title;
+        ((CalculateSize)vtable[Native.calculateSizeSlot])(title, &size, Base + Native.unboundedSize);
+        nameEnd = min(nameX + size.width, end - CaretWidth - CaretGap);
+        caretX = nameEnd + CaretGap;
+    } else {
+        caretX = nameX;
+        nameX = caretX + CaretWidth + IconGap;
+    }
+    PlaceView(title, nameX, max(nameEnd - nameX, 0));
+    PlaceView(caret, caretX, CaretShown ? CaretWidth : 0);
 }
 
 // Back to exactly what Aside would draw, using its own function and its own color.
@@ -366,23 +520,39 @@ static BOOL ResolveTint(BYTE *view, int color, BOOL expanded, DWORD *argb) {
     return TRUE;
 }
 
-static void PaintBlock(BYTE *container, void *canvas, const RECT *rect, int inset, int color, BOOL expanded) {
+static void PaintBlock(BYTE *container, void *canvas, const RECT *rect, int left, int right, int color, BOOL expanded) {
     DWORD argb;
     if (!ResolveTint(container, color, expanded, &argb)) return;
     RECT area;
     BoundsOf(container, &area);
     int *insets = (int *)((BYTE *)Rounded + 0x20);
     insets[0] = rect->top;
-    insets[1] = rect->left + inset;
+    insets[1] = rect->left + left;
     insets[2] = (area.bottom - area.top) - rect->bottom;
-    insets[3] = (area.right - area.left) - rect->right + (inset ? 6 : 0);
+    insets[3] = (area.right - area.left) - rect->right + right;
     *(ULONGLONG *)((BYTE *)Rounded + 8) = (1ull << 32) | argb;
     void **vtable = *(void ***)Rounded;
     ((Paint)vtable[Native.backgroundPaintOffset / 8])(Rounded, canvas, container);
 }
 
+// Whether anything inside a folder is showing, and how far down it reaches.
+static BOOL IsOpen(void **children, size_t count, size_t index, RECT *block) {
+    BYTE *node = NodeOf(children[index]);
+    BOOL open = FALSE;
+    for (size_t j = index + 1; j < count; j++) {
+        BYTE *child = children[j];
+        if (!IsRow(child) || !NodeOf(child) || !IsInside(NodeOf(child), node)) break;
+        RECT bounds;
+        BoundsOf(child, &bounds);
+        if (!IsVisible(child) || bounds.bottom <= bounds.top) continue;
+        if (block) block->bottom = max(block->bottom, bounds.bottom);
+        open = TRUE;
+    }
+    return open;
+}
+
 static void PaintFolders(BYTE *container, void *canvas) {
-    if (!Rounded || !FolderCount) return;
+    if (!Rounded || !FolderCount || !BackdropShown) return;
     size_t count;
     void **children = ChildrenOf(container, &count);
     int baseDepth = 1 << 30;
@@ -401,17 +571,8 @@ static void PaintFolders(BYTE *container, void *canvas) {
         RECT block;
         BoundsOf(row, &block);
         if (block.bottom <= block.top) continue;
-        BOOL expanded = FALSE;
-        for (size_t j = i + 1; j < count; j++) {
-            BYTE *child = children[j];
-            if (!IsRow(child) || !NodeOf(child) || !IsInside(NodeOf(child), node)) break;
-            RECT bounds;
-            BoundsOf(child, &bounds);
-            if (!IsVisible(child) || bounds.bottom <= bounds.top) continue;
-            block.bottom = max(block.bottom, bounds.bottom);
-            expanded = TRUE;
-        }
-        PaintBlock(container, canvas, &block, (DepthOf(node) - baseDepth) * INDENT, color, expanded);
+        BOOL expanded = IsOpen(children, count, i, &block);
+        PaintBlock(container, canvas, &block, (DepthOf(node) - baseDepth) * LeftOffset, DepthOf(node) > baseDepth ? RightOffset : 0, color, expanded);
     }
 }
 
@@ -439,7 +600,7 @@ static void AddContainer(BYTE *view) {
 static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time) {
     (void)window, (void)message, (void)timer, (void)time;
     MenuTick();
-    if (!FolderCount) return;
+    if (!FolderCount && ClosedAngle == OpenAngle) return;
     for (int i = 0; i < ContainerCount; i++) {
         Container *container = &Containers[i];
         void *vtable;
@@ -526,7 +687,10 @@ static void StartOnUiThread(void) {
 
 static void RowPaint(void *view, void *canvas) {
     BYTE *row = view;
-    if (Learned) StyleRow(row);
+    if (Learned) {
+        StyleRow(row);
+        PlaceCaret(row);
+    }
     OriginalRowPaint(view, canvas);
     if (!Learned) {
         if (LearnAttempts >= 64) return;
@@ -545,6 +709,37 @@ static void RowPaint(void *view, void *canvas) {
     BYTE *parent = *(BYTE **)(row + ParentOffset);
     if (!parent) return;
     AddContainer(parent);
+}
+
+// Rows lay themselves out again, which puts back whatever isn't moved any more, and repaint.
+static void ArrangeRows(void) {
+    for (int i = 0; i < ContainerCount; i++) {
+        void *vtable;
+        if (!SafeRead(Containers[i].view, &vtable, sizeof vtable) || vtable != Containers[i].vtable) continue;
+        size_t count;
+        void **children = ChildrenOf(Containers[i].view, &count);
+        for (size_t j = 0; j < count; j++) {
+            if (!IsRow(children[j])) continue;
+            void **rowVtable = *(void ***)children[j];
+            ((SizeChanged)rowVtable[Native.sizeChangedSlot])(children[j]);
+            Repaint(children[j]);
+        }
+        Repaint(Containers[i].view);
+    }
+}
+
+PATCH_OPTION() {
+    BOOL on = !strcmp(value, "true");
+    if (!strcmp(key, "indicator.show")) CaretShown = on;
+    else if (!strcmp(key, "indicator.closed")) ClosedAngle = atoi(value);
+    else if (!strcmp(key, "indicator.open")) OpenAngle = atoi(value);
+    else if (!strcmp(key, "backdrop.show")) BackdropShown = on;
+    else if (!strcmp(key, "backdrop.left")) LeftOffset = atoi(value);
+    else if (!strcmp(key, "backdrop.right")) RightOffset = atoi(value);
+    else if (!strcmp(key, "indicator.position")) {
+        Position = !strcmp(value, "before-icon") ? CARET_BEFORE_ICON : !strcmp(value, "before-name") ? CARET_BEFORE_NAME : !strcmp(value, "after-name") ? CARET_AFTER_NAME : CARET_RIGHT;
+    }
+    if (Enabled) ArrangeRows();
 }
 
 PATCH_START() {
@@ -568,20 +763,24 @@ PATCH_ENABLE() {
     void *rows[MAX_ROWS];
     int count = FindObjects(RowVtable, rows, MAX_ROWS);
     for (int i = 0; i < count; i++) Repaint(rows[i]);
+    Enabled = TRUE;
     ModLog("bookmark-folder-appearance ready: row vtable %#lx, paint slot %d, bounds +%#lx, %d folders stored, %d rows live",
            Native.rowVtable, Native.paintBackgroundSlot, Native.boundsOffset, FolderCount, count);
 }
 
 PATCH_DISABLE() {
+    Enabled = FALSE;
     if (Timer) KillTimer(NULL, Timer);
     Timer = 0;
     MenuTick();
     for (int i = 0; i < ContainerCount; i++) {
+        void *vtable;
+        if (!SafeRead(Containers[i].view, &vtable, sizeof vtable) || vtable != Containers[i].vtable) continue;
         size_t count;
         void **children = ChildrenOf(Containers[i].view, &count);
         for (size_t j = 0; j < count; j++)
             if (IsRow(children[j])) RestoreRow(children[j]);
-        Repaint(Containers[i].view);
     }
+    ArrangeRows();
     ContainerCount = 0;
 }

@@ -615,6 +615,41 @@ static const char *ResolveColorProvider(const Lookup *lookup, Bindings *bindings
     return "the color provider";
 }
 
+// SetPreferredSize keeps its value in an optional, and ends by saying the size changed:
+// lea rax,[rcx+size]; mov r9b,[rcx+size+8] ... mov rax,[rcx]; mov rax,[rax+changed]; jmp
+// Everything that reads it then has this shape, with the method that works it out otherwise:
+// cmp byte [view+size+8],1; je; mov rax,[view]; mov rax,[rax+calculate]; lea r8,[no limits]
+static const char *ResolveViewSize(const Lookup *lookup, Bindings *bindings) {
+    const BYTE *set = lookup->base + bindings->setPreferredSize;
+    if (memcmp(set, "\x48\x8d\x81", 3)) return "where a view keeps its size";
+    DWORD has = *(const DWORD *)(set + 3) + 8;
+    DWORD changed = FindBytes(lookup, bindings->setPreferredSize, bindings->setPreferredSize + 0x60, "\x48\x8b\x01\x48\x8b\x80", 6);
+    if (!changed) return "View::PreferredSizeChanged";
+    bindings->sizeChangedSlot = *(const DWORD *)(lookup->base + changed + 6) / 8;
+
+    int votes[MAX_SLOTS] = {0}, best = 0;
+    DWORD start = lookup->text->VirtualAddress, end = start + lookup->text->Misc.VirtualSize - 40;
+    for (DWORD rva = start; rva < end; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (p[0] != 0x80 || (p[1] & 0xf8) != 0xb8 || *(const DWORD *)(p + 2) != has || p[6] != 1 || p[7] != 0x0f || p[8] != 0x84) continue;
+        // mov rax,[view] and the method, and then the bounds, each possibly with something else between.
+        for (DWORD at = rva + 13; at < rva + 20; at++) {
+            const BYTE *q = lookup->base + at;
+            if ((q[0] != 0x48 && q[0] != 0x4c) || q[1] != 0x8b || (q[2] & 0xc7) != 0x80) continue;
+            DWORD offset = *(const DWORD *)(q + 3);
+            DWORD bounds = FindBytes(lookup, at + 7, at + 16, "\x4c\x8d\x05", 3);
+            if (!bounds || offset % 8 || offset / 8 >= MAX_SLOTS) break;
+            if (++votes[offset / 8] > best) {
+                best = votes[offset / 8];
+                bindings->calculateSizeSlot = offset / 8;
+                bindings->unboundedSize = bounds + 7 + *(const INT32 *)(lookup->base + bounds + 3);
+            }
+            break;
+        }
+    }
+    return best >= 8 ? NULL : "View::CalculatePreferredSize";
+}
+
 static DWORD IconOr(const Lookup *lookup, const char *name, DWORD fallback) {
     DWORD icon = FindVectorIcon(lookup, name);
     return icon ? icon : fallback;
@@ -639,6 +674,7 @@ static const char *ResolveMenu(const Lookup *lookup, Bindings *bindings) {
     if ((missing = ResolvePicker(lookup, show, bindings))) return missing;
     if ((missing = ResolveGroupColors(lookup, bindings))) return missing;
     if ((missing = ResolveColorProvider(lookup, bindings))) return missing;
+    if ((missing = ResolveViewSize(lookup, bindings))) return missing;
     bindings->changeIconIcon = IconOr(lookup, "kAsideEmojiAddReactionStrokeIcon", bindings->folderIcon);
     bindings->resetIcon = IconOr(lookup, "kAsideReloadChromeRefreshIcon", bindings->folderIcon);
     bindings->renameIcon = IconOr(lookup, "kAsideEditChromeRefreshIcon", bindings->folderIcon);

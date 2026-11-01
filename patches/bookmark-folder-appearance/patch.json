@@ -2,5 +2,22 @@
   "id": "bookmark-folder-appearance",
   "title": "Bookmark folder appearance",
   "description": "Give bookmark folders colors and icons, from a right-click menu like the tab group one.",
-  "tested": ["1.0.1022.1"]
+  "tested": ["1.0.1022.1"],
+  "options": [
+    { "group": "Indicator", "key": "indicator.show", "type": "switch", "title": "Show", "default": true },
+    { "group": "Indicator", "key": "indicator.position", "type": "select", "title": "Position", "when": "indicator.show", "default": "right",
+      "choices": [
+        { "value": "right", "title": "Aligned right" },
+        { "value": "before-icon", "title": "Before icon" },
+        { "value": "before-name", "title": "Before name" },
+        { "value": "after-name", "title": "After name" }
+      ] },
+    { "group": "Indicator", "key": "indicator.closed", "type": "select", "title": "Closed angle", "when": "indicator.show", "default": "0",
+      "choices": [ { "value": "0", "title": "0°" }, { "value": "90", "title": "90°" }, { "value": "180", "title": "180°" }, { "value": "270", "title": "270°" } ] },
+    { "group": "Indicator", "key": "indicator.open", "type": "select", "title": "Open angle", "when": "indicator.show", "default": "180",
+      "choices": [ { "value": "0", "title": "0°" }, { "value": "90", "title": "90°" }, { "value": "180", "title": "180°" }, { "value": "270", "title": "270°" } ] },
+    { "group": "Backdrop", "key": "backdrop.show", "type": "switch", "title": "Show", "default": true },
+    { "group": "Backdrop", "key": "backdrop.left", "type": "slider", "title": "Nesting offset left", "when": "backdrop.show", "default": 14, "min": 0, "max": 32, "unit": "px" },
+    { "group": "Backdrop", "key": "backdrop.right", "type": "slider", "title": "Nesting offset right", "when": "backdrop.show", "default": 6, "min": 0, "max": 32, "unit": "px" }
+  ]
 }
