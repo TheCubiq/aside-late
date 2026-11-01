@@ -100,6 +100,7 @@ typedef struct {
     double turnDegrees;
     DWORD canvasPaintOffset;   // gfx::Canvas's cc::PaintCanvas.
     int canvasSaveSlot, canvasConcatSlot, canvasRestoreSlot;
+    DWORD canvasClipRect, canvasSaveLayerAlpha;  // gfx::Canvas's own. 0 if this build has neither.
 
     // The button that closes a bookmark's tab, which Aside shows on a loaded bookmark while it's hovered.
     DWORD closeOffset, hoverOffset, loadedOffset;

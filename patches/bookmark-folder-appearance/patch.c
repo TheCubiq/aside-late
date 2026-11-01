@@ -16,6 +16,9 @@
 #define MAX_TRACKED_ROWS 256
 #define MAX_MOTIONS 256
 #define MAX_INDENTS 64
+#define MAX_GHOSTS 64
+#define MAX_GHOST_DEPTH 16
+#define CLIP_INTERSECT 1
 #define MOTION_MS 180
 #define ANIMATOR_ROWS 0xb8
 #define ANIMATION_VALUE_SLOT 4
@@ -74,6 +77,17 @@ typedef struct {
     ULONGLONG start;
 } IndentMotion;
 
+// A row that just went away because its folder folded, painted a little longer where it was. Either Aside was going to
+// delete it, which then happens, or it's a folder this patch hid, which stays.
+typedef struct {
+    BYTE *row, *container;
+    const BYTE *folded;
+    int depth, color, foldedBottom;
+    int rect[4];
+    BOOL kept;
+    ULONGLONG start;
+} Ghost;
+
 // A backdrop's height as it's shown on the way to what it should be. Aside removes a folded folder's rows at once, so
 // it can't just follow them.
 typedef struct {
@@ -84,7 +98,11 @@ typedef struct {
 
 typedef void *(*SetProperty)(void *properties, const void *key, const char *name, void *deleter, void *value, void *unused);
 typedef void (*Deleter)(void *value);
+typedef void *(*RowDeleter)(void *row, unsigned flags);
 typedef void (*Rebuild)(void *owner, BOOL animate);
+typedef void (*CanvasClipRect)(void *canvas, const ViewRect *rect, int operation);
+typedef void (*CanvasSaveLayerAlpha)(void *canvas, BYTE alpha, const ViewRect *rect);
+typedef void (*ViewPaint)(void *view, void *canvas);
 typedef void *(*OperatorNew)(size_t size);
 typedef void *(*MeasureSize)(void *view, void *size, const void *bounds);
 typedef double (*AnimationValue)(void *animation);
@@ -123,6 +141,7 @@ static Layout OriginalRowLayout, OriginalContainerLayout;
 static MeasureSize OriginalContainerMeasure;
 static ClosePress OriginalClosePress;
 static MousePressed OriginalMousePressed;
+static RowDeleter OriginalRowDelete;
 
 // Learned from live objects.
 static DWORD ParentOffset, ChildrenOffset, NodeOffset, GuidOffset, NodeParentOffset;
@@ -163,6 +182,8 @@ static int MotionCount;
 static BOOL BlocksMoving, Projecting;
 static IndentMotion Indents[MAX_INDENTS];
 static int IndentCount;
+static Ghost Ghosts[MAX_GHOSTS];
+static int GhostCount;
 static BOOL OrderEdited, RebuildWanted;
 static BYTE *DeleteOwner;
 static LONGLONG DeleteNodeId;
@@ -927,6 +948,17 @@ static void PaintFolders(BYTE *container, void *canvas) {
     }
 }
 
+// Whether a node's folder is open, for a node that might be gone.
+static BOOL NodeIsOpen(const BYTE *owner, const BYTE *node) {
+    LONGLONG id;
+    if (!SafeRead(node + Native.nodeIdOffset, &id, sizeof id)) return TRUE;
+    const LONGLONG *ids = *(const LONGLONG *const *)(owner + Native.expandedOffset);
+    size_t count = *(const size_t *)(owner + Native.expandedOffset + 8);
+    for (size_t i = 0; i < count; i++)
+        if (ids[i] == id) return TRUE;
+    return FALSE;
+}
+
 static const BYTE *FindRowOf(const BYTE *container, const BYTE *node) {
     size_t count;
     void **children = ChildrenOf(container, &count);
@@ -940,9 +972,103 @@ static double Eased(ULONGLONG start) {
     return done * done * (3 - 2 * done);
 }
 
+static void Translate(void *canvas, int x, int y) {
+    void *paint = *(void **)((BYTE *)canvas + Native.canvasPaintOffset);
+    void **vtable = *(void ***)paint;
+    const float move[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, (float)x, (float)y, 0, 1};
+    ((CanvasConcat)vtable[Native.canvasConcatSlot])(paint, move);
+}
+
+static void CanvasPush(void *canvas) {
+    void *paint = *(void **)((BYTE *)canvas + Native.canvasPaintOffset);
+    void **vtable = *(void ***)paint;
+    ((CanvasSave)vtable[Native.canvasSaveSlot])(paint);
+}
+
+static void CanvasPop(void *canvas) {
+    void *paint = *(void **)((BYTE *)canvas + Native.canvasPaintOffset);
+    void **vtable = *(void ***)paint;
+    ((CanvasRestore)vtable[Native.canvasRestoreSlot])(paint);
+}
+
+// A row that's on its way out is its icon, title and caret, painted where they are in it. Not the row itself or its other
+// parts: each normally has a layer of its own, and some clear what they paint on, which here is the whole container.
+// With its container as its parent, it finds its colors.
+static void PaintGhostRow(const Ghost *ghost, void *canvas, int shift) {
+    BYTE *row = ghost->row, *parent = *(BYTE **)(row + ParentOffset);
+    BYTE *parts[] = {*(BYTE **)(row + Native.leadingOffset), *(BYTE **)(row + Native.titleOffset), *(BYTE **)(row + Native.caretOffset)};
+    *(BYTE **)(row + ParentOffset) = ghost->container;
+    // A rebuild gives a row back Aside's icons, and only a row that paints gets its own again. Its node may be gone.
+    char guid[GUID_SIZE];
+    if (ReadGuidAt(NodeOf(row), GuidOffset, guid)) StyleRow(row);
+    for (size_t i = 0; i < sizeof parts / sizeof *parts; i++) {
+        BYTE *part = parts[i];
+        if (!part || !IsVisible(part)) continue;
+        const int *bounds = (const int *)(part + Native.boundsOffset);
+        void **vtable = *(void ***)part;
+        CanvasPush(canvas);
+        Translate(canvas, ghost->rect[0] + bounds[0], ghost->rect[1] + shift + bounds[1]);
+        ((ViewPaint)vtable[Native.caretPaintSlot])(part, canvas);
+        CanvasPop(canvas);
+    }
+    *(BYTE **)(row + ParentOffset) = parent;
+}
+
+static BOOL SameGroup(const Ghost *a, const Ghost *b) {
+    return a->folded == b->folded && a->start == b->start;
+}
+
+// A folded folder's rows stay where they were, in the part of its backdrop that hasn't folded away yet, and fade. Rows
+// that folded together are one group, painted into one layer so their backdrops don't add up as they fade.
+static void PaintGhosts(BYTE *container, void *canvas) {
+    for (int i = 0; i < GhostCount; i++) {
+        const Ghost *first = &Ghosts[i];
+        BOOL painted = first->container != container;
+        for (int j = 0; j < i && !painted; j++) painted = Ghosts[j].container == container && SameGroup(&Ghosts[j], first);
+        if (painted) continue;
+        const BYTE *folder = FindRowOf(container, first->folded);
+        if (!folder) continue;
+        int bottom = first->foldedBottom;
+        for (int j = i; j < GhostCount; j++) {
+            if (!SameGroup(&Ghosts[j], first)) continue;
+            bottom = max(bottom, Ghosts[j].rect[1] + Ghosts[j].rect[3]);
+        }
+        RECT now, end, area;
+        RowPlace(folder, &now, &end);
+        BoundsOf(container, &area);
+        double eased = Eased(first->start);
+        int shift = now.bottom - first->foldedBottom, height = (int)((bottom + BottomOffset - first->foldedBottom) * (1 - eased));
+        ViewRect clip = {0, now.bottom, area.right - area.left, height};
+        if (height <= 0) continue;
+        CanvasPush(canvas);
+        ((CanvasClipRect)(Base + Native.canvasClipRect))(canvas, &clip, CLIP_INTERSECT);
+        ((CanvasSaveLayerAlpha)(Base + Native.canvasSaveLayerAlpha))(canvas, (BYTE)(255 * (1 - eased)), &clip);
+        // A folder's backdrop runs to the next row that isn't inside it, outermost first.
+        for (int depth = 0; depth < MAX_GHOST_DEPTH && Rounded; depth++) {
+            for (int j = i; j < GhostCount; j++) {
+                const Ghost *ghost = &Ghosts[j];
+                if (!SameGroup(ghost, first) || ghost->depth != depth || ghost->color < 0) continue;
+                const int *bounds = ghost->rect;
+                int blockEnd = bottom + BottomOffset;
+                for (int k = i; k < GhostCount; k++) {
+                    const int *other = Ghosts[k].rect;
+                    if (SameGroup(&Ghosts[k], first) && Ghosts[k].depth <= depth && other[1] > bounds[1] && other[1] < blockEnd) blockEnd = other[1];
+                }
+                RECT block = {bounds[0], bounds[1] + shift, bounds[0] + bounds[2], blockEnd + shift};
+                PaintBlock(container, canvas, &block, depth * LeftOffset, depth * RightOffset, ghost->color, TRUE);
+            }
+        }
+        for (int j = i; j < GhostCount; j++)
+            if (SameGroup(&Ghosts[j], first)) PaintGhostRow(&Ghosts[j], canvas, shift);
+        CanvasPop(canvas);
+        CanvasPop(canvas);
+    }
+}
+
 static void ContainerPaint(void *view, void *canvas) {
     OriginalContainerPaint(view, canvas);
     PaintFolders(view, canvas);
+    if (GhostCount) PaintGhosts(view, canvas);
 }
 
 // The container draws the outline of a selected or dragged row itself, around that row's bounds. Children paint after
@@ -1008,6 +1134,8 @@ static void SetRowPadding(BYTE *row, int padding) {
     ((SizeChanged)vtable[Native.sizeChangedSlot])(row);
 }
 
+static void HoldGhost(BYTE *row, BOOL kept);
+
 static void SetRowHidden(BYTE *row, BOOL hidden) {
     int found = -1;
     for (int i = 0; i < HiddenCount && found < 0; i++)
@@ -1015,7 +1143,10 @@ static void SetRowHidden(BYTE *row, BOOL hidden) {
     void **vtable = *(void ***)row;
     if (hidden) {
         if (found < 0 && HiddenCount < MAX_TRACKED_ROWS) HiddenRows[HiddenCount++] = row;
-        if (IsVisible(row)) ((SetVisible)vtable[Native.setVisibleSlot])(row, FALSE);
+        if (IsVisible(row)) {
+            HoldGhost(row, TRUE);
+            ((SetVisible)vtable[Native.setVisibleSlot])(row, FALSE);
+        }
     } else if (found >= 0) {
         HiddenRows[found] = HiddenRows[--HiddenCount];
         ((SetVisible)vtable[Native.setVisibleSlot])(row, TRUE);
@@ -1127,6 +1258,12 @@ static BOOL ContainerIsLive(const BYTE *view) {
     return FALSE;
 }
 
+static const Container *ContainerOfOwner(const BYTE *owner) {
+    for (int i = 0; i < ContainerCount; i++)
+        if (Containers[i].owner == owner && ContainerIsLive(Containers[i].view)) return &Containers[i];
+    return NULL;
+}
+
 static BOOL RowIsLive(const BYTE *row) {
     for (int i = 0; i < ContainerCount; i++) {
         if (!ContainerIsLive(Containers[i].view)) continue;
@@ -1136,6 +1273,71 @@ static BOOL RowIsLive(const BYTE *row) {
             if (children[j] == row) return TRUE;
     }
     return FALSE;
+}
+
+// The outermost folded folder a row is under, or NULL. The row's node may be gone if its bookmark was deleted.
+static const BYTE *FoldedAbove(const BYTE *row, const BYTE *owner) {
+    const BYTE *node = NodeOf(row), *folded = NULL;
+    int depth = *(const int *)(row + Native.depthOffset);
+    for (int level = 0; level < depth && node; level++) {
+        if (!SafeRead(node + NodeParentOffset, &node, sizeof node) || !node) break;
+        if (!NodeIsOpen(owner, node)) folded = node;
+    }
+    return folded;
+}
+
+// Whether a row that's going away has a folded folder to fade into, and if so it does.
+static BOOL TryHoldGhost(BYTE *row, BOOL kept) {
+    if (!Enabled || !Learned || !Native.canvasClipRect || !Native.canvasSaveLayerAlpha || GhostCount == MAX_GHOSTS) return FALSE;
+    const int *bounds = (const int *)(row + Native.boundsOffset);
+    int depth = *(const int *)(row + Native.depthOffset);
+    if (!IsVisible(row) || row[Native.collapsedOffset] || row[Native.dragActiveOffset] || bounds[3] <= 0 || depth >= MAX_GHOST_DEPTH) return FALSE;
+    const BYTE *owner = OwnerOf(row);
+    const Container *container = owner ? ContainerOfOwner(owner) : NULL;
+    const BYTE *folded = container ? FoldedAbove(row, owner) : NULL;
+    const BYTE *folder = folded ? FindRowOf(container->view, folded) : NULL;
+    if (!folder) return FALSE;
+    RECT now, end;
+    RowPlace(folder, &now, &end);
+    char guid[GUID_SIZE];
+    int color = BackdropShown && ReadGuidAt(NodeOf(row), GuidOffset, guid) ? FindColor(guid) : -1;
+    ULONGLONG start = GetTickCount64();
+    // A folder opening again ends its ghosts, so any it still has folded with this one.
+    for (int i = 0; i < GhostCount; i++)
+        if (Ghosts[i].folded == folded) start = Ghosts[i].start;
+    Ghost *ghost = &Ghosts[GhostCount++];
+    *ghost = (Ghost){row, container->view, folded, depth, color == NEUTRAL_COLOR ? -1 : color, now.bottom, .kept = kept, .start = start};
+    memcpy(ghost->rect, bounds, sizeof ghost->rect);
+    Repaint(container->view);
+    return TRUE;
+}
+
+static void HoldGhost(BYTE *row, BOOL kept) {
+    TryHoldGhost(row, kept);
+}
+
+// Aside deletes the rows of a folder that just folded at the end of its rebuild. Called from anywhere else, it's not
+// that: a window closing leaves nothing to paint them into.
+static void *RowDelete(void *view, unsigned flags) {
+    const BYTE *caller = __builtin_return_address(0);
+    BOOL rebuilding = (flags & 1) && caller >= Base + Native.rebuild && caller < Base + Native.rebuildEnd;
+    for (int i = 0; i < HiddenCount; i++) {
+        if (HiddenRows[i] != view) continue;
+        HiddenRows[i] = HiddenRows[--HiddenCount];
+        break;
+    }
+    // Aside lays out before it rebuilds, so a folder under the one that folded can have been hidden on its way here.
+    for (int i = 0; i < GhostCount; i++) {
+        if (Ghosts[i].row != view || !Ghosts[i].kept) continue;
+        if (rebuilding) {
+            Ghosts[i].kept = FALSE;
+            return view;
+        }
+        Ghosts[i] = Ghosts[--GhostCount];
+        i--;
+    }
+    if (rebuilding && TryHoldGhost(view, FALSE)) return view;
+    return OriginalRowDelete(view, flags);
 }
 
 static void AdvanceIndents(void) {
@@ -1154,6 +1356,29 @@ static void AdvanceIndents(void) {
         if (eased < 1.0) continue;
         *motion = Indents[--IndentCount];
         i--;
+    }
+}
+
+// A ghost is done when its time is up, or as soon as its folder opens again. With its window gone, what it would
+// tell on its way out is too, so it's left alone.
+static void AdvanceGhosts(BOOL finish) {
+    for (int i = 0; i < GhostCount; i++) {
+        Ghost *ghost = &Ghosts[i];
+        BOOL live = ContainerIsLive(ghost->container);
+        const BYTE *owner = live ? OwnerOf(ghost->row) : NULL;
+        if (live && !finish && GetTickCount64() - ghost->start < MOTION_MS && (!owner || !NodeIsOpen(owner, ghost->folded))) {
+            BlocksMoving = TRUE;
+            continue;
+        }
+        BYTE *row = ghost->row, *container = ghost->container;
+        BOOL kept = ghost->kept;
+        *ghost = Ghosts[--GhostCount];
+        i--;
+        if (!live) continue;
+        Repaint(container);
+        if (kept) continue;
+        void **vtable = *(void ***)row;
+        ((RowDeleter)vtable[Native.rowDeleteSlot])(row, 1);
     }
 }
 
@@ -1181,6 +1406,7 @@ static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time)
             if (Containers[i].owner && ContainerIsLive(Containers[i].view)) ((Rebuild)(Base + Native.rebuild))((void *)Containers[i].owner, FALSE);
     }
     AdvanceIndents();
+    AdvanceGhosts(FALSE);
     for (int i = 0; i < ContainerCount; i++)
         if (ContainerIsLive(Containers[i].view)) PlaceHiddenRows(Containers[i].view);
     BOOL moving = BlocksMoving;
@@ -1365,6 +1591,8 @@ PATCH_ENABLE() {
     if (!HookVtable(RowVtable, Native.mousePressedSlot, RowMousePressed, (void **)&OriginalMousePressed)) ModLog("couldn't hook the row's clicks");
     if (!HookVtable(RowVtable, Native.layoutSlot, RowLayout, (void **)&OriginalRowLayout)) ModLog("couldn't hook the row's layout");
     if (!HookVtable((void **)(Base + Native.caretVtable), Native.caretPaintSlot, CaretPaint, (void **)&OriginalCaretPaint)) ModLog("couldn't hook the caret");
+    if (Native.rebuild && !HookVtable(RowVtable, Native.rowDeleteSlot, RowDelete, (void **)&OriginalRowDelete)) ModLog("couldn't hook how a row is deleted");
+    if (!Native.rebuild || !Native.canvasClipRect || !Native.canvasSaveLayerAlpha) ModLog("a folding folder's rows won't fade in this build");
     OrderEdited = FALSE;
     ApplyActiveOrder();
     // Rows on screen paint again, and that brings back everything else.
@@ -1385,6 +1613,7 @@ PATCH_DISABLE() {
     if (Timer) KillTimer(NULL, Timer);
     Timer = 0;
     MenuTick();
+    AdvanceGhosts(TRUE);
     IndentCount = 0;
     OrderEdited = FALSE;
     RebuildWanted = FALSE;

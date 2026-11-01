@@ -879,6 +879,27 @@ static const char *ResolveCaret(const Lookup *lookup, Bindings *bindings) {
     return "how the caret paints";
 }
 
+// Canvas::ClipRect: mov rcx,[rcx+paint]; then the Rect as an SkRect: movq xmm0,[rdx]; movq xmm1,[rdx+8]; paddd; ...
+// Canvas::SaveLayerAlphaWithBounds: movzx eax,dl; cvtsi2ss xmm2,eax; mov rcx,[rcx+paint]; then divided by 255.
+// Each has to be the only function of its shape.
+static void ResolveCanvas(const Lookup *lookup, Bindings *bindings) {
+    static const BYTE alpha[] = {0x0f, 0xb6, 0xc2, 0xf3, 0x0f, 0x2a, 0xd0, 0x48, 0x8b, 0x89};
+    static const BYTE rect[] = {0xf3, 0x0f, 0x7e, 0x02, 0xf3, 0x0f, 0x7e, 0x4a, 0x08, 0x66, 0x0f, 0xfe, 0xc8, 0x66, 0x0f, 0x6c, 0xc1, 0x0f, 0x5b, 0xc0, 0x48, 0x8d, 0x54, 0x24};
+    DWORD start = lookup->text->VirtualAddress, end = start + lookup->text->Misc.VirtualSize - 64, clip = 0, layer = 0;
+    for (DWORD rva = start; rva < end; rva++) {
+        const BYTE *p = lookup->base + rva;
+        BOOL isClip = p[0] == 0x48 && p[1] == 0x8b && p[2] == 0x89 && *(const DWORD *)(p + 3) == bindings->canvasPaintOffset && !memcmp(p + 7, rect, sizeof rect);
+        BOOL isLayer = p[0] == 0x0f && !memcmp(p, alpha, sizeof alpha) && *(const DWORD *)(p + sizeof alpha) == bindings->canvasPaintOffset;
+        if (!isClip && !isLayer) continue;
+        const RUNTIME_FUNCTION *fn = LookupFunction(lookup, rva);
+        DWORD *found = isClip ? &clip : &layer;
+        if (!fn || (*found && *found != fn->BeginAddress)) return;
+        *found = fn->BeginAddress;
+    }
+    bindings->canvasClipRect = clip;
+    bindings->canvasSaveLayerAlpha = layer;
+}
+
 // The function that shows the close button reads the row's caret first, and it's what says when:
 // and al,[rsi+hovered]; ...; mov dil,[rsi+loaded]
 static const char *ResolveClose(const Lookup *lookup, Bindings *bindings) {
@@ -955,6 +976,7 @@ static const char *ResolveMenu(const Lookup *lookup, Bindings *bindings) {
     if ((missing = ResolveExpanded(lookup, bindings))) return missing;
     if ((missing = ResolveDrag(lookup, bindings))) return missing;
     if ((missing = ResolveCaret(lookup, bindings))) return missing;
+    ResolveCanvas(lookup, bindings);
     if ((missing = ResolveClose(lookup, bindings))) return missing;
     bindings->changeIconIcon = IconOr(lookup, "kAsideEmojiAddReactionStrokeIcon", bindings->folderIcon);
     bindings->resetIcon = IconOr(lookup, "kAsideReloadChromeRefreshIcon", bindings->folderIcon);
