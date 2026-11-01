@@ -1,7 +1,7 @@
 // A folder's right-click menu, assembled from the same controls as Aside's tab group menu.
 #pragma once
 
-#include "resolve.h"
+#include "resolve/resolve.h"
 
 #define COMMAND_RENAME 1
 #define COMMAND_DELETE 2
