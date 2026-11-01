@@ -8,9 +8,16 @@
 #define TEXT_SIZE 512
 #define SETTLE_MS 30000
 #define ENABLE_SETTLE_MS 5000
+#define MAX_OPTIONS 32
+#define OPTION_SIZE 48
 
 typedef const char *(*StartFunction)(const Lookup *lookup, BYTE *base);
 typedef void (*SwitchFunction)(void);
+typedef void (*OptionFunction)(const char *key, const char *value);
+
+typedef struct {
+    char key[OPTION_SIZE], value[OPTION_SIZE], fallback[OPTION_SIZE];
+} Option;
 
 typedef struct {
     char id[ID_SIZE], title[128], description[TEXT_SIZE], source[128], sha[64];
@@ -25,14 +32,18 @@ typedef struct {
     const BYTE *moduleEnd;
     StartFunction start;
     SwitchFunction enable, disable;
+    OptionFunction option;
+    char *optionsJson;   // The manifest's list of options, for the page.
+    Option options[MAX_OPTIONS];
+    int optionCount;
 } ModPatch;
 
-typedef enum { JOB_SET, JOB_INSTALL, JOB_REMOVE } JobKind;
+typedef enum { JOB_SET, JOB_INSTALL, JOB_REMOVE, JOB_OPTION, JOB_RESET_OPTIONS } JobKind;
 
 typedef struct {
     JobKind kind;
     BOOL on;
-    char id[ID_SIZE], repo[128], sha[64];
+    char id[ID_SIZE], repo[128], sha[64], key[OPTION_SIZE], value[OPTION_SIZE];
 } Job;
 
 static ModPatch Patches[MAX_PATCHES];
@@ -87,6 +98,113 @@ static BOOL IsSkipped(const char *id) {
     return FALSE;
 }
 
+static const char *SkipSpace(const char *at) {
+    while (*at == ' ' || *at == '\t' || *at == '\r' || *at == '\n') at++;
+    return at;
+}
+
+// Past one JSON value, whatever it holds.
+static const char *SkipValue(const char *at) {
+    int depth = 0;
+    BOOL quoted = FALSE;
+    for (; *at; at++) {
+        if (quoted) {
+            if (*at == '\\' && at[1]) at++;
+            else if (*at == '"') {
+                quoted = FALSE;
+                if (!depth) return at + 1;
+            }
+        } else if (*at == '"') {
+            quoted = TRUE;
+        } else if (*at == '{' || *at == '[') {
+            depth++;
+        } else if (*at == '}' || *at == ']') {
+            if (!depth) return at;
+            if (!--depth) return at + 1;
+        } else if (*at == ',' && !depth) {
+            return at;
+        }
+    }
+    return at;
+}
+
+// Where the value of a key of this object starts, not counting anything nested in it, or NULL.
+static const char *FindValue(const char *object, const char *key) {
+    size_t size = strlen(key);
+    const char *at = SkipSpace(object);
+    if (*at != '{') return NULL;
+    for (at = SkipSpace(at + 1); *at == '"'; at = SkipSpace(at + 1)) {
+        const char *end = SkipValue(at), *value = SkipSpace(end);
+        if (*value != ':') return NULL;
+        value = SkipSpace(value + 1);
+        if ((size_t)(end - at) == size + 2 && !memcmp(at + 1, key, size)) return value;
+        at = SkipSpace(SkipValue(value));
+        if (*at != ',') return NULL;
+    }
+    return NULL;
+}
+
+// A string without its quotes, or anything else as it's written.
+static void ValueText(const char *value, char *out, size_t size) {
+    const char *end = SkipValue(value);
+    if (*value == '"') value++, end--;
+    else while (end > value && strchr(" \t\r\n", end[-1])) end--;
+    snprintf(out, size, "%.*s", (int)(end - value), value);
+}
+
+static void OptionsPath(const char *id, wchar_t *path) {
+    swprintf(path, PATH_SIZE, L"%ls\\options\\%hs.tsv", Home, id);
+}
+
+// patch.json says what a patch's options are and their defaults, and a file keeps what's been changed.
+static void ReadOptions(ModPatch *patch, const char *manifest) {
+    free(patch->optionsJson);
+    patch->optionsJson = NULL;
+    patch->optionCount = 0;
+    const char *list = FindValue(manifest, "options");
+    if (!list || *list != '[') return;
+    const char *end = SkipValue(list);
+    patch->optionsJson = malloc(end - list + 1);
+    memcpy(patch->optionsJson, list, end - list);
+    patch->optionsJson[end - list] = 0;
+    for (const char *at = SkipSpace(list + 1); *at == '{' && patch->optionCount < MAX_OPTIONS;) {
+        const char *key = FindValue(at, "key"), *fallback = FindValue(at, "default");
+        if (key && fallback) {
+            Option *option = &patch->options[patch->optionCount++];
+            ValueText(key, option->key, OPTION_SIZE);
+            ValueText(fallback, option->fallback, OPTION_SIZE);
+            strcpy(option->value, option->fallback);
+        }
+        at = SkipSpace(SkipValue(at));
+        if (*at == ',') at = SkipSpace(at + 1);
+    }
+    wchar_t path[PATH_SIZE];
+    OptionsPath(patch->id, path);
+    char *saved = ReadWholeFile(path, NULL);
+    if (!saved) return;
+    for (char *line = strtok(saved, "\r\n"); line; line = strtok(NULL, "\r\n")) {
+        char *value = strchr(line, '\t');
+        if (!value) continue;
+        *value++ = 0;
+        for (int i = 0; i < patch->optionCount; i++)
+            if (!strcmp(patch->options[i].key, line)) snprintf(patch->options[i].value, OPTION_SIZE, "%s", value);
+    }
+    free(saved);
+}
+
+static void SaveOptions(const ModPatch *patch) {
+    wchar_t path[PATH_SIZE];
+    OptionsPath(patch->id, path);
+    FILE *file = _wfopen(path, L"w");
+    if (!file) {
+        ModLog("couldn't save %s's options", patch->id);
+        return;
+    }
+    for (int i = 0; i < patch->optionCount; i++)
+        if (strcmp(patch->options[i].value, patch->options[i].fallback)) fprintf(file, "%s\t%s\n", patch->options[i].key, patch->options[i].value);
+    fclose(file);
+}
+
 // Adds or refreshes the patch in a folder holding patch.json and a DLL.
 static ModPatch *AddPatchFolder(const wchar_t *folder, BOOL installed) {
     wchar_t path[PATH_SIZE];
@@ -127,6 +245,7 @@ static ModPatch *AddPatchFolder(const wchar_t *folder, BOOL installed) {
         strcpy(patch->sha, sha);
         strcpy(patch->source, installed ? source : "built-in");
         wcscpy(patch->dll, path);
+        ReadOptions(patch, manifest);
         // Nothing has loaded yet on the first pass, so anything an update left behind can go.
         if (installed && !patch->module) CleanOldBuilds(id, sha);
     }
@@ -207,6 +326,17 @@ void SavePatchList(void) {
             WriteJsonText(file, patch->status);
             fputs(",\"error\":", file);
             WriteJsonText(file, patch->error);
+            // As text, so a mistake in one patch's manifest can't break the whole list.
+            fputs(",\"options\":", file);
+            WriteJsonText(file, patch->optionsJson ? patch->optionsJson : "[]");
+            fputs(",\"values\":{", file);
+            for (int j = 0; j < patch->optionCount; j++) {
+                fputs(j ? "," : "", file);
+                WriteJsonText(file, patch->options[j].key);
+                fputc(':', file);
+                WriteJsonText(file, patch->options[j].value);
+            }
+            fputc('}', file);
             fprintf(file, ",\"wanted\":%s,\"running\":%s,\"needsRestart\":%s,\"installed\":%s,\"crashed\":%s}", patch->wanted ? "true" : "false",
                     patch->running ? "true" : "false", patch->needsRestart ? "true" : "false", patch->installed ? "true" : "false",
                     patch->crashed ? "true" : "false");
@@ -247,6 +377,7 @@ static BOOL LoadPatchModule(ModPatch *patch) {
     patch->start = (StartFunction)(void *)GetProcAddress(patch->module, "PatchStart");
     patch->enable = (SwitchFunction)(void *)GetProcAddress(patch->module, "PatchEnable");
     patch->disable = (SwitchFunction)(void *)GetProcAddress(patch->module, "PatchDisable");
+    patch->option = (OptionFunction)(void *)GetProcAddress(patch->module, "PatchOption");
     if (!patch->enable) {
         snprintf(patch->error, sizeof patch->error, "It doesn't export PatchEnable");
         return FALSE;
@@ -290,8 +421,15 @@ static void ClearMarker(void) {
     DeleteFileW(path);
 }
 
+// A patch has every option's value before it's enabled.
+static void GiveOptions(const ModPatch *patch) {
+    if (!patch->option) return;
+    for (int i = 0; i < patch->optionCount; i++) patch->option(patch->options[i].key, patch->options[i].value);
+}
+
 static void DoEnable(void *argument) {
     ModPatch *patch = argument;
+    GiveOptions(patch);
     patch->enable();
     patch->running = TRUE;
 }
@@ -347,6 +485,24 @@ static void RunSet(const Job *job) {
     SavePatchList();
 }
 
+static void DoGiveOptions(void *argument) {
+    GiveOptions(argument);
+}
+
+// A patch that's off, or that only works from startup, gets the new values when it's next enabled.
+static void RunOption(const Job *job) {
+    ModPatch *patch = FindPatch(job->id);
+    if (!patch) return;
+    for (int i = 0; i < patch->optionCount; i++) {
+        Option *option = &patch->options[i];
+        if (job->kind == JOB_RESET_OPTIONS) strcpy(option->value, option->fallback);
+        else if (!strcmp(option->key, job->key)) snprintf(option->value, OPTION_SIZE, "%s", job->value);
+    }
+    SaveOptions(patch);
+    if (patch->running && !patch->needsRestart && patch->option) RunOnUiThread(DoGiveOptions, patch);
+    SavePatchList();
+}
+
 static void RunInstall(const Job *job) {
     char error[TEXT_SIZE] = "";
     ModPatch *old = FindPatch(job->id);
@@ -357,6 +513,7 @@ static void RunInstall(const Job *job) {
         old->module = NULL;
         old->start = NULL;
         old->enable = old->disable = NULL;
+        old->option = NULL;
         old->error[0] = 0;
     }
     if (!InstallPatch(job->repo, job->id, job->sha, error, sizeof error) || (!AddInstalledPatch(job->id) && snprintf(error, sizeof error, "Its folder doesn't look right"))) {
@@ -387,7 +544,10 @@ static void RunRemove(const Job *job) {
     swprintf(path, PATH_SIZE, L"%ls\\patches\\%hs\\installed.txt", Home, job->id);
     DeleteFileW(path);
     CleanOldBuilds(job->id, "");
+    OptionsPath(job->id, path);
+    DeleteFileW(path);
     EnterCriticalSection(&Lock);
+    free(patch->optionsJson);
     *patch = Patches[--PatchCount];
     LeaveCriticalSection(&Lock);
     SaveDisabled();
@@ -423,7 +583,8 @@ static DWORD WINAPI WorkerMain(void *unused) {
             if (!any) break;
             if (job.kind == JOB_SET) RunSet(&job);
             else if (job.kind == JOB_INSTALL) RunInstall(&job);
-            else RunRemove(&job);
+            else if (job.kind == JOB_REMOVE) RunRemove(&job);
+            else RunOption(&job);
         }
     }
     return 0;
@@ -450,6 +611,20 @@ void QueueSet(const char *id, BOOL enabled) {
     strcpy(job.id, id);
     PushJob(&job);
     SavePatchList();
+}
+
+void QueueOption(const char *id, const char *key, const char *value) {
+    Job job = {.kind = JOB_OPTION};
+    snprintf(job.id, sizeof job.id, "%s", id);
+    snprintf(job.key, sizeof job.key, "%s", key);
+    snprintf(job.value, sizeof job.value, "%s", value);
+    PushJob(&job);
+}
+
+void QueueResetOptions(const char *id) {
+    Job job = {.kind = JOB_RESET_OPTIONS};
+    snprintf(job.id, sizeof job.id, "%s", id);
+    PushJob(&job);
 }
 
 void QueueInstall(const char *repo, const char *id, const char *sha) {
@@ -558,6 +733,9 @@ void PatchesStart(BYTE *base) {
     Base = base;
     InitializeCriticalSection(&Lock);
     ULONGLONG started = GetTickCount64();
+    wchar_t folder[PATH_SIZE];
+    HomePathW(folder, L"options");
+    CreateDirectoryW(folder, NULL);
     FindPatches();
     ReadDisabled();
     RecoverFromCrash();
@@ -570,6 +748,7 @@ void PatchesStart(BYTE *base) {
         ModPatch *patch = &Patches[i];
         if (!patch->wanted || SafeMode || IsSkipped(patch->id)) continue;
         if (StartPatch(patch, &lookup, &copy)) {
+            GiveOptions(patch);
             patch->enable();
             patch->running = TRUE;
             ModLog("%s on", patch->id);

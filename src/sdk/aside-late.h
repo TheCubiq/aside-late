@@ -17,6 +17,9 @@
 #define PATCH_START() __declspec(dllexport) const char *PatchStart(const Lookup *lookup, BYTE *base)
 #define PATCH_ENABLE() __declspec(dllexport) void PatchEnable(void)
 #define PATCH_DISABLE() __declspec(dllexport) void PatchDisable(void)
+// Gets each option in patch.json before Enable, and any that changes while the patch is on. It runs
+// where Enable does. Values are text: a choice's value, "true" or "false", or a number.
+#define PATCH_OPTION() __declspec(dllexport) void PatchOption(const char *key, const char *value)
 
 SDK void ModLog(const char *format, ...);
 // A path inside aside-late's home folder, for a patch's own data.

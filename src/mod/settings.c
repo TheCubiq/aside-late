@@ -27,12 +27,15 @@ static unsigned NextRecent;
 #define WriteWhole WriteWholeFile
 
 // Requests from the page look like /aside-late/<verb>/<...>/<nonce>. Aside looks at a file before it
-// opens it, so one request arrives more than once, and only the first of a nonce counts.
+// opens it, so one request arrives more than once, and only the first of a nonce counts. Others can
+// arrive in between, so it takes more than the last one to tell.
 static BOOL IsNewRequest(const wchar_t *request) {
-    static wchar_t last[PATH_SIZE];
+    static wchar_t seen[MAX_RECENT][PATH_SIZE];
+    static unsigned next;
     EnterCriticalSection(&Lock);
-    BOOL fresh = wcscmp(last, request) != 0;
-    if (fresh) wcsncpy(last, request, PATH_SIZE - 1);
+    BOOL fresh = TRUE;
+    for (int i = 0; i < MAX_RECENT && fresh; i++) fresh = wcscmp(seen[i], request) != 0;
+    if (fresh) wcsncpy(seen[next++ % MAX_RECENT], request, PATH_SIZE - 1);
     LeaveCriticalSection(&Lock);
     return fresh;
 }
@@ -82,6 +85,10 @@ static void RunRequest(const wchar_t *request) {
     char *tilde;
     if (count == 4 && !strcmp(parts[0], "set") && IsName(parts[1])) {
         QueueSet(parts[1], parts[2][0] == '1');
+    } else if (count == 5 && !strcmp(parts[0], "option") && IsName(parts[1]) && IsName(parts[2]) && IsName(parts[3])) {
+        QueueOption(parts[1], parts[2], parts[3]);
+    } else if (count == 3 && !strcmp(parts[0], "reset") && IsName(parts[1])) {
+        QueueResetOptions(parts[1]);
     } else if (count == 5 && !strcmp(parts[0], "install") && IsName(parts[1]) && IsName(parts[2]) && IsName(parts[3])) {
         if ((tilde = strchr(parts[1], '~'))) *tilde = '/';
         QueueInstall(parts[1], parts[2], parts[3]);
@@ -151,7 +158,7 @@ static const wchar_t *Redirect(const wchar_t *path, wchar_t *out, wchar_t *clean
     if (folder) {
         const wchar_t *request = folder + wcslen(Folder);
         if (wcsstr(request, L"..")) return path;
-        if (!wcsncmp(request, L"set\\", 4) || !wcsncmp(request, L"install\\", 8) || !wcsncmp(request, L"remove\\", 7) || !wcsncmp(request, L"repo\\", 5)) {
+        if (!wcsncmp(request, L"set\\", 4) || !wcsncmp(request, L"install\\", 8) || !wcsncmp(request, L"remove\\", 7) || !wcsncmp(request, L"repo\\", 5) || !wcsncmp(request, L"option\\", 7) || !wcsncmp(request, L"reset\\", 6)) {
             RunRequest(request);
             HomePath(out, L"web\\ok.txt");
         } else if (PublishedPath(request, out)) {

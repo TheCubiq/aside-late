@@ -40,6 +40,8 @@ void PatchesClean(void);
 void QueueSet(const char *id, BOOL enabled);
 void QueueInstall(const char *repo, const char *id, const char *sha);
 void QueueRemove(const char *id);
+void QueueOption(const char *id, const char *key, const char *value);
+void QueueResetOptions(const char *id);
 void SavePatchList(void);
 // Finds the patch's folder and loads it into the list after an install. Safe to call on an update.
 BOOL AddInstalledPatch(const char *id);
