@@ -106,6 +106,34 @@ the same bytes: the second one's edit is refused.
 
 Prefer classes and methods to code patterns. They're what survives a rebuild of Aside.
 
+### Options
+
+A patch that lists `options` in `patch.json` gets a configure button next to its switch, which
+opens a popup. Options that share a `group` go in an accordion, and `when` disables an option
+while a switch is off.
+
+```json
+"options": [
+  { "group": "Look", "key": "look.show", "type": "switch", "title": "Show", "default": true },
+  { "group": "Look", "key": "look.side", "type": "select", "title": "Side", "when": "look.show", "default": "left",
+    "choices": [ { "value": "left", "title": "Left" }, { "value": "right", "title": "Right" } ] },
+  { "group": "Look", "key": "look.gap", "type": "slider", "title": "Gap", "when": "look.show", "default": 4, "min": 0, "max": 16, "unit": "px" }
+]
+```
+
+Keys and values can use letters, digits and `-_.~`. Changes apply as they're made. The patch
+gets each value as text, before `PATCH_ENABLE` and again whenever one changes while it's on:
+
+```c
+PATCH_OPTION() {
+    if (!strcmp(key, "look.gap")) Gap = atoi(value);
+    // Redraw here if the patch is on.
+}
+```
+
+Values that differ from the defaults are kept in `options\<id>.tsv` in the home folder. A patch
+with `"restart": true` gets changes the next time Aside starts, and its popup says so.
+
 ## How it works
 
 1. `aside-late.exe` starts `Aside.exe` as a debugger, waits for the moment `Aside.dll` is
@@ -153,6 +181,8 @@ extension page whose files its browser process reads, so:
    page's CSS classes. It uses none of the page's code, so it needs no per-build names.
 5. The switch is Aside's own rebuilt: the same parts, classes, spring and glass as its component.
    The glass picture comes from a native switch on the page, and without one a press looks plainer.
+   The popup, accordion and select are rebuilt the same way. Aside has no slider, so that one
+   takes its colors and thumb from the switch.
 
 ### chats
 
@@ -175,6 +205,16 @@ Right-click a bookmark folder for a menu built like Aside's tab group menu: its 
 icon picker, a reset, and the folder's own Rename, Delete and Manage Bookmarks. A colored
 folder and its open contents get a rounded tint, and its icon and title take the color.
 Choices are kept by folder GUID in `folders.tsv` in the home folder.
+
+Its options arrange every folder, colored or not:
+
+- **The caret** can be hidden or moved. The caret and title are moved just before they paint, by
+  changing their bounds, and the row's next layout puts them back. The icon has a layer, which
+  that can't move, so a caret before the icon is the two views swapping what they show.
+- **Angles** rotate the caret's own path in 90° steps, which needs no drawing API. Aside's caret
+  view turns its image a half turn when a folder is open, so the image allows for that.
+- **The backdrop** can be hidden, and its offsets at each nesting level changed. They move the
+  tint and not the rows.
 
 Nothing is stored per build:
 
@@ -211,5 +251,11 @@ This is later binding than offsets, not real name lookup like Dia's Objective-C 
   the UI thread, the first time.
 - A new window's sidebar draws once before Chats is hidden, so Chats could flash.
 - The icon picker shows names rather than the icons themselves.
+- A folder counts as open when something inside it is showing. An open empty folder's caret is a
+  half turn off, unless the angles are the defaults.
+- With custom angles, the caret's image changes at once as a folder opens, during Aside's own animation.
+- With the caret before the icon, a folder icon whose path can't be turned turns upside down
+  while the folder is open. `mod.log` names any such icon. None has been seen, but only the
+  default folder icon and the rocket were tested.
 - Reopening a collapsed sidebar hasn't been tested with `chats`, because UI Automation
   couldn't re-expand it.
