@@ -114,7 +114,13 @@ typedef struct {
     DWORD minusIcon;           // 0 if this build has none.
 
     // By name, each falling back to the folder icon.
-    DWORD changeIconIcon, resetIcon, renameIcon, deleteIcon, manageIcon;
+    DWORD changeIconIcon, resetIcon, renameIcon, deleteIcon, manageIcon, newFolderIcon;
+
+    // Chromium's bookmark editor, as its bookmark bar opens it for a new folder. editorShow is 0 if this build differs.
+    DWORD editorAddFolder, editorShow, editorDetailsDestroy;
+    DWORD editorCallbackInvoke, editorCallbackDestroy, editorCallbackQuery;
+    DWORD ownerBrowserOffset, nodeChildrenOffset;
+    int browserProfileSlot, browserWindowSlot, windowNativeSlot;
 } Bindings;
 
 // One entry of the icon table.

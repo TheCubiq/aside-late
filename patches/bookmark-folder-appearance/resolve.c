@@ -982,6 +982,78 @@ static const char *ResolveClose(const Lookup *lookup, Bindings *bindings) {
     return NULL;
 }
 
+// After its metric, the bookmark bar's New Folder makes a do-nothing callback, works out where the folder goes, and then:
+// AddFolder(details, parent, index); Show(window, profile, details, 0, callback); ~EditDetails(details)
+static void ResolveNewFolder(const Lookup *lookup, Bindings *bindings) {
+    DWORD strings[2];
+    if (LookupStrings(lookup, "BookmarkBar_ContextMenu_NewFolder", strings, 2) != 1) return;
+    size_t count;
+    const Reference *sites = LookupCode(lookup, strings[0], &count);
+    const RUNTIME_FUNCTION *fn = count == 1 ? LookupFunction(lookup, sites[0].site) : NULL;
+    if (!fn) return;
+    DWORD at = sites[0].site, calls[8];
+    for (int i = 0; i < 8; i++)
+        if (!NextCall(lookup, &at, fn->EndAddress, &calls[i])) return;
+    // lea rcx,[function]; mov [rax+8|10h|18h],rcx
+    DWORD found[3] = {0};
+    for (DWORD rva = sites[0].site; rva + 11 <= fn->EndAddress && !found[2]; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (memcmp(p, "\x48\x8d\x0d", 3) || memcmp(p + 7, "\x48\x89\x48", 3)) continue;
+        if (p[10] == 0x08 || p[10] == 0x10 || p[10] == 0x18) found[p[10] / 8 - 1] = rva + 7 + *(const INT32 *)(p + 3);
+    }
+    if (!found[0] || !found[1] || !found[2]) return;
+
+    // A caller of Show gets the window from a browser: mov rax,[rax+window] ... mov rcx,[rax]; mov rdx,[rcx+native]; mov rcx,rax; mov rax,rdx
+    DWORD show = calls[6];
+    DWORD start = lookup->text->VirtualAddress, end = start + lookup->text->Misc.VirtualSize - 8;
+    int windowSlot = 0, nativeSlot = 0, profileSlot = 0;
+    for (DWORD rva = start; rva < end && !profileSlot; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (p[0] != 0x48 || p[1] != 0x8b || p[2] != 0x08 || p[3] != 0x48 || p[4] != 0x8b || p[5] != 0x51 || memcmp(p + 7, "\x48\x89\xc1\x48\x89\xd0", 6)) continue;
+        DWORD call = rva + 13, target;
+        if (!NextCall(lookup, &call, rva + 0x30, &target) || target != show) continue;
+        // And the same function starts by asking it for the profile it passes:
+        // mov rax,[rcx]; mov rax,[rax+profile]; call; mov r12,rax
+        const RUNTIME_FUNCTION *caller = LookupFunction(lookup, rva);
+        if (!caller) continue;
+        for (DWORD at = caller->BeginAddress; at + 19 <= rva && !profileSlot; at++) {
+            const BYTE *q = lookup->base + at;
+            if (memcmp(q, "\x48\x8b\x01\x48\x8b\x40", 6) || memcmp(q + 7, "\xff\x15", 2) || memcmp(q + 13, "\x49\x89\xc4", 3)) continue;
+            profileSlot = q[6] / 8;
+        }
+        if (!profileSlot) continue;
+        for (DWORD back = rva; back > rva - 0x20; back--) {
+            const BYTE *b = lookup->base + back;
+            if (memcmp(b, "\x48\x8b\x40", 3)) continue;
+            windowSlot = b[3] / 8;
+            nativeSlot = p[6] / 8;
+            break;
+        }
+    }
+    if (!windowSlot) return;
+
+    // A row's owner asks its browser for the same thing:
+    // mov rcx,[rsi+browser]; test rcx,rcx; je; mov rax,[rcx]; mov rax,[rax+profile]
+    for (DWORD rva = bindings->rebuild - 0x4000; rva < bindings->rebuild + 0x8000; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (memcmp(p, "\x48\x8b\x8e", 3) || memcmp(p + 7, "\x48\x85\xc9\x0f\x84", 5) || memcmp(p + 16, "\x48\x8b\x01\x48\x8b\x40", 6) || p[22] / 8 != profileSlot) continue;
+        bindings->ownerBrowserOffset = *(const DWORD *)(p + 3);
+        break;
+    }
+    if (!bindings->ownerBrowserOffset) return;
+    bindings->browserProfileSlot = profileSlot;
+    bindings->browserWindowSlot = windowSlot;
+    bindings->windowNativeSlot = nativeSlot;
+    bindings->editorCallbackInvoke = found[0];
+    bindings->editorCallbackDestroy = found[1];
+    bindings->editorCallbackQuery = found[2];
+    bindings->editorAddFolder = calls[5];
+    bindings->editorDetailsDestroy = calls[7];
+    // A folder's children are listed right after its parent, as learned from the live node, and Aside reads them at +40h.
+    bindings->nodeChildrenOffset = 0x40;
+    bindings->editorShow = show;
+}
+
 static DWORD IconOr(const Lookup *lookup, const char *name, DWORD fallback) {
     DWORD icon = FindVectorIcon(lookup, name);
     return icon ? icon : fallback;
@@ -1023,6 +1095,8 @@ static const char *ResolveMenu(const Lookup *lookup, Bindings *bindings) {
     bindings->renameIcon = IconOr(lookup, "kAsideEditChromeRefreshIcon", bindings->folderIcon);
     bindings->deleteIcon = IconOr(lookup, "kTrashCanRefreshOldIcon", bindings->folderIcon);
     bindings->manageIcon = IconOr(lookup, "kBookmarksManagerOldIcon", bindings->folderIcon);
+    bindings->newFolderIcon = IconOr(lookup, "kAsideAddIcon", bindings->folderIcon);
+    ResolveNewFolder(lookup, bindings);
     return NULL;
 }
 

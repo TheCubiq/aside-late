@@ -13,6 +13,8 @@
 #define POPUP_REASON_CLOSED 5
 #define ACTION_CHANGE_ICON -1
 #define ACTION_RESET -2
+#define ACTION_NEW_FOLDER -3
+#define EDIT_DETAILS_SIZE 0x400
 
 typedef struct {
     LONG references;
@@ -69,6 +71,10 @@ typedef void (*Update)(void *view);
 typedef void (*SetInt)(void *view, int value);
 typedef void (*PickerConstruct)(void *picker, const void *selected, void *callback);
 typedef void (*MenuClosed)(void *owner, LONGLONG generation);
+typedef void (*EditAddFolder)(void *details, const void *parent, size_t index);
+typedef void (*EditDestroy)(void *details);
+typedef void (*ShowEditor)(void *window, void *profile, const void *details, int type, void **callback);
+typedef void *(*BrowserGet)(void *self);
 
 static const Bindings *Native;
 static BYTE *Base;
@@ -79,6 +85,7 @@ static BYTE *Owner;
 static LONGLONG Generation;
 static int Command;
 static BOOL OwnerPending;
+static const BYTE *NewFolderParent;
 static void *Colors[MAX_COLORS];
 static int ColorCount;
 static Popup Main, Picker;
@@ -245,6 +252,7 @@ static void OnItemHovered(Callback *state, void *view) {
 }
 
 static void *ItemAnchors[8];
+static const BYTE *Node;
 
 static void OnItem(Callback *state) {
     switch (state->action) {
@@ -256,6 +264,10 @@ static void OnItem(Callback *state) {
             Choices.icon = NULL;
             Choices.reset();
             MarkSelectedColor(-1);
+            return;
+        case ACTION_NEW_FOLDER:
+            NewFolderParent = Node;
+            ClosePopup(&Main);
             return;
         default:
             Command = state->action;
@@ -327,6 +339,8 @@ void MenuOpen(BYTE *row, BYTE *owner, const BYTE *node, POINT screen, const Menu
     Choices = *choices;
     Owner = owner;
     Command = 0;
+    Node = node;
+    NewFolderParent = NULL;
 
     // The same state Aside's own menu sets up, so its commands act on this folder.
     *(LONGLONG *)(owner + Native->ownerNodeIdOffset) = *(const LONGLONG *)(node + Native->nodeIdOffset);
@@ -349,6 +363,7 @@ void MenuOpen(BYTE *row, BYTE *owner, const BYTE *node, POINT screen, const Menu
     ItemAnchors[0] = changeIcon;
     Add(view, changeIcon, ChildCountOffset);
     if (Choices.color >= 0 || Choices.icon) Add(view, NewItem(L"Reset appearance", Native->resetIcon, ACTION_RESET, FALSE), ChildCountOffset);
+    if (Native->editorShow) Add(view, NewItem(L"New folder", Native->newFolderIcon, ACTION_NEW_FOLDER, FALSE), ChildCountOffset);
     Add(view, NewItem(L"Rename", Native->renameIcon, COMMAND_RENAME, FALSE), ChildCountOffset);
     Add(view, NewItem(L"Delete", Native->deleteIcon, COMMAND_DELETE, FALSE), ChildCountOffset);
     Add(view, NewItem(L"Manage Bookmarks", Native->manageIcon, COMMAND_MANAGE, FALSE), ChildCountOffset);
@@ -367,6 +382,35 @@ void MenuAskDeleteBookmark(BYTE *owner, const BYTE *node) {
     ((MenuClosed)Call(Native->bookmarkMenuClosed))(owner, generation);
 }
 
+// Chromium's own editor, the one its bookmark bar opens for a new folder, set to put it at the end of this one.
+static void OpenNewFolder(const BYTE *parent) {
+    void *browser = *(void **)(Owner + Native->ownerBrowserOffset);
+    if (!browser) {
+        ModLog("new folder: the window has no browser");
+        return;
+    }
+    void **vtable = *(void ***)browser;
+    void *profile = ((BrowserGet)vtable[Native->browserProfileSlot])(browser);
+    void *window = ((BrowserGet)vtable[Native->browserWindowSlot])(browser);
+    if (!profile || !window) {
+        ModLog("new folder: no profile or window");
+        return;
+    }
+    vtable = *(void ***)window;
+    void *nativeWindow = ((BrowserGet)vtable[Native->windowNativeSlot])(window);
+    _Alignas(16) static BYTE details[EDIT_DETAILS_SIZE];
+    ((EditAddFolder)Call(Native->editorAddFolder))(details, parent, *(const size_t *)(parent + Native->nodeChildrenOffset + 8));
+    // Bound to do nothing, as Aside binds it for this.
+    void **state = ((OperatorNew)Call(Native->operatorNew))(0x28);
+    *(DWORD *)state = 1;
+    state[1] = Call(Native->editorCallbackInvoke);
+    state[2] = Call(Native->editorCallbackDestroy);
+    state[3] = Call(Native->editorCallbackQuery);
+    void *callback = state;
+    ((ShowEditor)Call(Native->editorShow))(nativeWindow, profile, details, 0, &callback);
+    ((EditDestroy)Call(Native->editorDetailsDestroy))(details);
+}
+
 void MenuTick(void) {
     for (int i = 0; i < RetiredCount; i++) {
         Popup popup = Retired[i];
@@ -382,4 +426,9 @@ void MenuTick(void) {
     if (*(LONGLONG *)(Owner + Native->ownerGenerationOffset) != Generation) return;
     *(int *)(Owner + Native->ownerCommandOffset) = Command;
     ((MenuClosed)Call(Native->menuClosed))(Owner, Generation);
+    if (NewFolderParent) {
+        const BYTE *parent = NewFolderParent;
+        NewFolderParent = NULL;
+        OpenNewFolder(parent);
+    }
 }
