@@ -422,13 +422,14 @@ function textButton(label, action) {
   return button(BUTTON_OUTLINE, label, action);
 }
 
-// The Configure button of Aside's preferred languages, with no room for its label beside a switch.
+// The Configure button of Aside's preferred languages.
 function configureButton(patch) {
-  const node = make("button", `${BUTTON} ${BUTTON_OUTLINE} size-8`, glyph("configure", "text-muted-foreground size-4"));
+  const icon = glyph("configure", "text-muted-foreground size-4");
+  icon.dataset.icon = "inline-start";
+  const node = make("button", `${BUTTON} ${BUTTON_OUTLINE} ${BUTTON_TEXT} has-data-[icon=inline-start]:pl-2`, icon, make("span", "", "Configure"));
   node.dataset.slot = "button";
   node.dataset.asideLateConfigure = patch.id;
   node.type = "button";
-  node.title = "Configure";
   node.setAttribute("aria-label", `Configure ${patch.title}`);
   node.setAttribute("aria-haspopup", "dialog");
   node.addEventListener("click", () => openOptions(patch.id));
