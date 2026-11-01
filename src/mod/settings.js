@@ -400,6 +400,11 @@ function toggle(patch) {
   }
   button.setAttribute("aria-label", patch.title);
   button.setChecked(isOn(patch));
+  // Switching only takes a moment. Starting takes seconds, and a press then wouldn't do anything.
+  const starting = Boolean(patch.status) && patch.status !== "Applying";
+  button.disabled = starting;
+  button.style.opacity = starting ? "0.5" : "";
+  button.style.cursor = starting ? "not-allowed" : "";
   return button;
 }
 
