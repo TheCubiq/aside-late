@@ -762,6 +762,34 @@ static void ResolveRebuild(const Lookup *lookup, const RUNTIME_FUNCTION *build, 
     }
 }
 
+// Everything asking for a rebuild sets its guard first, and clears whether another was asked for:
+// mov byte [rsi+guard],1; mov dl,1; mov byte [rsi+guard+1],0; and dl,1; mov rcx,rsi; call rebuild
+static void ResolveRebuildGuard(const Lookup *lookup, Bindings *bindings) {
+    if (!bindings->rebuild) return;
+    for (DWORD at = bindings->rebuild - 0x10000; at < bindings->rebuild + 0x20000; at++) {
+        const BYTE *p = lookup->base + at;
+        if (p[0] != 0xc6 || p[1] != 0x86 || p[6] != 1 || p[7] != 0xb2 || p[8] != 1 || p[9] != 0xc6 || p[10] != 0x86) continue;
+        if (*(const DWORD *)(p + 11) != *(const DWORD *)(p + 2) + 1 || p[15] != 0 || memcmp(p + 16, "\x80\xe2\x01\x48\x89\xf1", 6) || !IsCall(p + 22)) continue;
+        if (CallTarget(at + 22, p + 22) != bindings->rebuild) continue;
+        bindings->rebuildGuardOffset = *(const DWORD *)(p + 2);
+        return;
+    }
+}
+
+// The builder binds each row's callbacks with itself as the receiver, and the first is what closes a bookmark's tab:
+// lea rax,[method]; mov [rcx+20h],rax; mov dword [rcx+28h],0; mov [rcx+30h],rbx. That tests the node isn't a folder.
+static void ResolveUnload(const Lookup *lookup, const RUNTIME_FUNCTION *build, Bindings *bindings) {
+    BYTE type[7] = {0x83, 0xba};
+    memcpy(type + 2, &bindings->nodeTypeOffset, 4);
+    for (DWORD at = build->BeginAddress; at + 22 <= build->EndAddress; at++) {
+        const BYTE *p = lookup->base + at;
+        if (memcmp(p, "\x48\x8d\x05", 3) || memcmp(p + 7, "\x48\x89\x41\x20\xc7\x41\x28", 7) || memcmp(p + 18, "\x48\x89\x59\x30", 4)) continue;
+        DWORD method = at + 7 + *(const INT32 *)(p + 3);
+        if (FindBytes(lookup, method, method + 0x30, type, sizeof type)) bindings->unloadTab = method;
+        return;
+    }
+}
+
 // For a folded folder, the builder lists its active tab, then the last one it was, then every loaded tab in order:
 // cmp byte [rbx+has],1; jne; mov rdx,[rbx+active]; mov rcx,r12; call
 // The list in order starts: movaps [rsp+x],xmm9; mov qword [rsp+y],0; mov rcx,rbx; mov rdx,r12; lea r8,[rsp+x]
@@ -804,6 +832,8 @@ static const char *ResolveExpanded(const Lookup *lookup, Bindings *bindings) {
         if (*(const DWORD *)(p + 10) != *(const DWORD *)(p + 3) + 8) continue;
         bindings->expandedOffset = *(const DWORD *)(p + 3);
         ResolveRebuild(lookup, build, bindings);
+        ResolveRebuildGuard(lookup, bindings);
+        ResolveUnload(lookup, build, bindings);
         ResolveActiveOrder(lookup, build, bindings);
         return NULL;
     }

@@ -19,6 +19,9 @@
 #define MAX_GHOSTS 64
 #define MAX_GHOST_DEPTH 16
 #define CLIP_INTERSECT 1
+#define FOLDER_BUTTON_GAP 4
+#define UNLOAD_WAIT_MS 500
+#define UNLOAD_SETTLE_MS 48
 #define MOTION_MS 180
 #define ANIMATOR_ROWS 0xb8
 #define ANIMATION_VALUE_SLOT 4
@@ -50,6 +53,7 @@ typedef struct {
 } Container;
 
 typedef enum { HOVER_NEVER, HOVER_COLLAPSED, HOVER_ALWAYS } FolderHoverMode;
+typedef enum { UNLOAD_NEVER, UNLOAD_COLLAPSED, UNLOAD_ALWAYS } FolderUnloadMode;
 
 typedef enum { CARET_RIGHT, CARET_BEFORE_ICON, CARET_BEFORE_NAME, CARET_AFTER_NAME } CaretPosition;
 
@@ -101,6 +105,7 @@ typedef void *(*SetProperty)(void *properties, const void *key, const char *name
 typedef void (*Deleter)(void *value);
 typedef void *(*RowDeleter)(void *row, unsigned flags);
 typedef void (*Rebuild)(void *owner, BOOL animate);
+typedef void (*UnloadTab)(void *owner, const void *node);
 typedef void (*CanvasClipRect)(void *canvas, const ViewRect *rect, int operation);
 typedef void (*CanvasSaveLayerAlpha)(void *canvas, BYTE alpha, const ViewRect *rect);
 typedef void (*ViewPaint)(void *view, void *canvas);
@@ -168,6 +173,7 @@ static BOOL CaretShown = TRUE, CaretFlipped, BackdropShown = TRUE, BackdropTinte
 static BOOL CloseRemoves, CloseConfirms = TRUE, CloseIsMinus;
 static BOOL LoadedRise, ActiveFirst;
 static FolderHoverMode FolderHover;
+static FolderUnloadMode FolderUnload;
 static int BottomOffset = 4;
 static CaretPosition Position;
 static int ClosedAngle, OpenAngle = 180;
@@ -186,6 +192,9 @@ static int IndentCount;
 static Ghost Ghosts[MAX_GHOSTS];
 static int GhostCount;
 static BOOL OrderEdited, RebuildWanted;
+static BYTE *HeldOwner;
+static ULONGLONG HeldUntil;
+static BOOL RebuildAnimated;
 static BYTE *DeleteOwner;
 static LONGLONG DeleteNodeId;
 static DWORD CloseIconOffset;
@@ -564,6 +573,46 @@ static void StartIndent(BYTE *row, int inset, int target) {
     motion->start = GetTickCount64();
 }
 
+// Whether a folder shows the button that unloads what's in it. There has to be something to unload.
+static BOOL ShowsUnloadButton(const BYTE *row, const BYTE *node, const BYTE *owner) {
+    if (FolderUnload == UNLOAD_NEVER || !Native.unloadTab || !Native.rebuildGuardOffset || !owner) return FALSE;
+    if (FolderUnload == UNLOAD_COLLAPSED && FolderIsOpen(owner, node)) return FALSE;
+    const BYTE *parent = *(const BYTE *const *)(row + ParentOffset);
+    if (!parent) return FALSE;
+    size_t count;
+    void **children = ChildrenOf(parent, &count);
+    for (size_t i = 0; i < count; i++) {
+        const BYTE *other = children[i];
+        if (IsRow(other) && other[Native.loadedOffset] && NodeOf(other) && IsInside(NodeOf(other), node)) return TRUE;
+    }
+    return FALSE;
+}
+
+// Aside puts the close button at the row's very end and moves a caret aligned right before it. The caret is what stays,
+// so the two swap places. Anything else that's there makes room.
+static void PlaceFolderButton(BYTE *row) {
+    const BYTE *node = Learned ? NodeOf(row) : NULL;
+    BYTE *close = *(BYTE **)(row + Native.closeOffset), *caret = *(BYTE **)(row + Native.caretOffset), *title = *(BYTE **)(row + Native.titleOffset);
+    if (!node || !*(const int *)(node + Native.nodeTypeOffset) || !close || !title || !IsVisible(close)) return;
+    const int *button = (const int *)(close + Native.boundsOffset), *name = (const int *)(title + Native.boundsOffset);
+    const int *mark = caret ? (const int *)(caret + Native.boundsOffset) : NULL;
+    BOOL caretShows = caret && CaretShown && IsVisible(caret);
+    if (caretShows && Position == CARET_RIGHT) {
+        int caretMiddle = mark[0] + mark[2] / 2, buttonMiddle = button[0] + button[2] / 2;
+        int caretWidth = mark[2], buttonWidth = button[2];
+        SetBounds(caret, buttonMiddle - caretWidth / 2, caretWidth);
+        SetBounds(close, caretMiddle - buttonWidth / 2, buttonWidth);
+    }
+    int limit = button[0] - FOLDER_BUTTON_GAP;
+    if (caretShows && Position == CARET_AFTER_NAME && mark[0] + mark[2] > limit) {
+        int over = mark[0] + mark[2] - limit;
+        SetBounds(title, name[0], max(name[2] - over, 0));
+        SetBounds(caret, mark[0] - over, mark[2]);
+    } else if (name[0] + name[2] > limit) {
+        SetBounds(title, name[0], max(limit - name[0], 0));
+    }
+}
+
 // Rearranges what Aside just laid out, keeping the gaps it left.
 static void PlaceCaret(BYTE *row) {
     BYTE *leading = *(BYTE **)(row + Native.leadingOffset), *caret = *(BYTE **)(row + Native.caretOffset), *title = *(BYTE **)(row + Native.titleOffset);
@@ -605,6 +654,7 @@ static void RowLayout(void *view, void *key) {
     OriginalRowLayout(view, key);
     bounds[2] = width;
     PlaceCaret(row);
+    PlaceFolderButton(row);
     IndentMotion *motion = FindIndent(row);
     if (motion) {
         motion->movedLeft = motion->movedRight = 0;
@@ -683,12 +733,32 @@ static void DeleteBookmark(void) {
     ((DeleteAccepted)(Base + Native.deleteAccepted))(state, 1);
 }
 
-// What a close button runs. On a bookmark that isn't loaded there's no tab to close, so it deletes the bookmark. Without
-// asking, that destroys the row and this button, so it waits until the button's press is over.
+// A tab closes a moment after it's asked to, and that rebuilds the rows with no animation. While the guard is up a rebuild
+// only notes that it's wanted, so it can happen when the tab has gone, the way it should. The tick lets go of it.
+static void HoldRebuilds(BYTE *owner, BOOL animated) {
+    owner[Native.rebuildGuardOffset] = 1;
+    HeldOwner = owner;
+    HeldUntil = GetTickCount64() + UNLOAD_WAIT_MS;
+    RebuildAnimated = animated;
+}
+
+// What a close button runs. On a folder it's the button that unloads what's in it. On a bookmark that isn't loaded there's
+// no tab to close, so it deletes the bookmark. Without asking, that destroys the row and this button, so it waits until the
+// button's press is over.
 static void ClosePressed(void *view, void *a, void *b, void *c) {
     BYTE *row = view;
     BYTE *node = NodeOf(row), *owner = OwnerOf(row);
-    if (Enabled && CloseRemoves && !row[Native.loadedOffset] && node && owner && !node[Native.nodeManagedOffset]) {
+    if (Enabled && node && owner && *(const int *)(node + Native.nodeTypeOffset)) {
+        if (!Native.unloadTab || !Native.rebuildGuardOffset) return;
+        const BYTE *parent = *(const BYTE *const *)(row + ParentOffset);
+        size_t count;
+        void **children = ChildrenOf(parent, &count);
+        HoldRebuilds(owner, TRUE);
+        for (size_t i = 0; i < count; i++) {
+            const BYTE *other = children[i];
+            if (IsRow(other) && other[Native.loadedOffset] && NodeOf(other) && IsInside(NodeOf(other), node)) ((UnloadTab)(Base + Native.unloadTab))(owner, NodeOf(other));
+        }
+    } else if (Enabled && CloseRemoves && !row[Native.loadedOffset] && node && owner && !node[Native.nodeManagedOffset]) {
         if (CloseConfirms) {
             MenuAskDeleteBookmark(owner, node);
             return;
@@ -745,18 +815,25 @@ static void LearnCloseIcon(const BYTE *close, const void *icon) {
 // Aside only shows the button on a loaded bookmark, and hides it again when the hover ends either way.
 static void StyleClose(BYTE *row) {
     BYTE *node = NodeOf(row), *close = *(BYTE **)(row + Native.closeOffset);
-    if (!node || !close || *(const int *)(node + Native.nodeTypeOffset) || !row[Native.hoverOffset]) return;
-    BOOL loaded = row[Native.loadedOffset];
-    if (CloseRemoves && !loaded && !IsVisible(close)) {
-        void **vtable = *(void ***)close;
-        ((SetVisible)vtable[Native.setVisibleSlot])(close, TRUE);
+    if (!node || !close) return;
+    BOOL folder = *(const int *)(node + Native.nodeTypeOffset) != 0, loaded = row[Native.loadedOffset];
+    void **vtable = *(void ***)close;
+    if (!row[Native.hoverOffset]) {
+        if (folder && IsVisible(close)) ((SetVisible)vtable[Native.setVisibleSlot])(close, FALSE);
+        return;
     }
-    if (CloseRemoves) TakeClosePress(row, close);
+    BOOL shows = folder ? ShowsUnloadButton(row, node, OwnerOf(row)) : CloseRemoves && !loaded;
+    if (shows && !IsVisible(close)) ((SetVisible)vtable[Native.setVisibleSlot])(close, TRUE);
+    if (folder && !shows) {
+        if (IsVisible(close)) ((SetVisible)vtable[Native.setVisibleSlot])(close, FALSE);
+        return;
+    }
+    TakeClosePress(row, close);
 
     if (!Native.minusIcon || CloseIconUnknown) return;
     // Aside gives the button its icon back whenever it likes, so what counts is what the button holds now.
     const void *minus = Base + Native.minusIcon;
-    BOOL wanted = CloseIsMinus && loaded, has = CloseIconOffset && *(const void *const *)(close + CloseIconOffset) == minus;
+    BOOL wanted = folder || (CloseIsMinus && loaded), has = CloseIconOffset && *(const void *const *)(close + CloseIconOffset) == minus;
     if (wanted == has || (!wanted && !CloseIconOffset)) return;
     if (wanted) SetCloseIcon(close, minus, *(const DWORD *)(close + Native.closeColorOffset));
     else ((RowFunction)(Base + Native.closeUpdateImage))(close);
@@ -1412,6 +1489,23 @@ static void ApplyActiveOrder(void) {
     else ModLog("couldn't change the order of a folded folder's rows");
 }
 
+// Once a rebuild has been asked for, the rest of the tabs going together get a moment to do the same.
+static void ReleaseHeldRebuilds(BOOL now) {
+    if (!ContainerOfOwner(HeldOwner)) {
+        HeldOwner = NULL;
+        return;
+    }
+    BYTE *guard = HeldOwner + Native.rebuildGuardOffset;
+    ULONGLONG time = GetTickCount64();
+    if (guard[1] && HeldUntil > time + UNLOAD_SETTLE_MS) HeldUntil = time + UNLOAD_SETTLE_MS;
+    if (!now && time < HeldUntil) return;
+    BYTE *owner = HeldOwner;
+    BOOL wanted = guard[1];
+    guard[0] = guard[1] = guard[2] = 0;
+    HeldOwner = NULL;
+    if (wanted) ((Rebuild)(Base + Native.rebuild))(owner, RebuildAnimated && !now);
+}
+
 // Rows move without their container repainting, and the blocks have to follow them.
 // Containers aren't told they're gone, but a freed one no longer has this vtable.
 static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time) {
@@ -1423,6 +1517,7 @@ static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time)
         for (int i = 0; i < ContainerCount; i++)
             if (Containers[i].owner && ContainerIsLive(Containers[i].view)) ((Rebuild)(Base + Native.rebuild))((void *)Containers[i].owner, FALSE);
     }
+    if (HeldOwner) ReleaseHeldRebuilds(FALSE);
     AdvanceIndents();
     AdvanceGhosts(FALSE);
     for (int i = 0; i < ContainerCount; i++)
@@ -1581,6 +1676,7 @@ PATCH_OPTION() {
             RebuildWanted = TRUE;
         }
     }
+    else if (!strcmp(key, "bookmark.unload-folder")) FolderUnload = !strcmp(value, "always") ? UNLOAD_ALWAYS : !strcmp(value, "collapsed") ? UNLOAD_COLLAPSED : UNLOAD_NEVER;
     else if (!strcmp(key, "backdrop.hover")) FolderHover = on ? HOVER_ALWAYS : !strcmp(value, "collapsed") ? HOVER_COLLAPSED : HOVER_NEVER;
     else if (!strcmp(key, "bookmark.remove")) CloseRemoves = on;
     else if (!strcmp(key, "bookmark.confirm")) CloseConfirms = on;
@@ -1637,6 +1733,7 @@ PATCH_DISABLE() {
     IndentCount = 0;
     OrderEdited = FALSE;
     RebuildWanted = FALSE;
+    if (HeldOwner) ReleaseHeldRebuilds(TRUE);
     for (int i = 0; i < ContainerCount; i++) {
         void *vtable;
         if (!SafeRead(Containers[i].view, &vtable, sizeof vtable) || vtable != Containers[i].vtable) continue;

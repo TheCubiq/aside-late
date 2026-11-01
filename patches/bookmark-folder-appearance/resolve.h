@@ -88,6 +88,9 @@ typedef struct {
     // What rebuilds the rows, and which method deletes one it has no more use for. 0 if this build has neither.
     DWORD rebuild, rebuildEnd;
     int rowDeleteSlot;
+    // What guards a rebuild in the owner, with whether another was asked for right after it. 0 if this build has none.
+    DWORD rebuildGuardOffset;
+    DWORD unloadTab;           // What a loaded bookmark's X runs, with the owner and the node. 0 if this build has none.
     // Where the rows of a folded folder are put in order, and past where that's done. 0 if this build has neither.
     DWORD activeOrderSite, activeOrderSkip;
     // A view's margins, which is one of its properties.
