@@ -859,6 +859,14 @@ static void PaintFolders(BYTE *container, void *canvas) {
     }
 }
 
+static const BYTE *FindRowOf(const BYTE *container, const BYTE *node) {
+    size_t count;
+    void **children = ChildrenOf(container, &count);
+    for (size_t i = 0; i < count; i++)
+        if (IsRow(children[i]) && NodeOf(children[i]) == node) return children[i];
+    return NULL;
+}
+
 static void ContainerPaint(void *view, void *canvas) {
     OriginalContainerPaint(view, canvas);
     PaintFolders(view, canvas);
@@ -941,6 +949,35 @@ static void SetRowHidden(BYTE *row, BOOL hidden) {
     }
 }
 
+// Aside remembers where every row was, to animate it from there, and a hidden row has been nowhere since it was last
+// laid out, or ever. So it's kept where Aside would start a new row: at the bottom of the folder it's under, with no height.
+static void PlaceHiddenRows(const BYTE *container) {
+    if (!HiddenCount) return;
+    size_t count;
+    void **children = ChildrenOf(container, &count);
+    for (size_t i = 0; i < count; i++) {
+        BYTE *row = children[i];
+        if (!IsRow(row) || IsVisible(row) || !NodeOf(row)) continue;
+        BOOL hidden = FALSE;
+        for (int j = 0; j < HiddenCount && !hidden; j++) hidden = HiddenRows[j] == row;
+        int levels = hidden ? LevelsToFolded(row) : 0;
+        if (!levels) continue;
+        const BYTE *up = NodeOf(row);
+        while (levels-- && up) up = NodeParent(up);
+        const BYTE *folder = up ? FindRowOf(container, up) : NULL;
+        if (!folder) continue;
+        RECT now, end;
+        BOOL moving = BlocksMoving;
+        RowPlace(folder, &now, &end);
+        BlocksMoving = moving;
+        int *bounds = (int *)(row + Native.boundsOffset);
+        bounds[0] = end.left;
+        bounds[1] = end.bottom;
+        bounds[2] = end.right - end.left;
+        bounds[3] = 0;
+    }
+}
+
 // Everything that changes how tall rows are has to be in place before Aside measures them, so its own animation heads
 // for the right place.
 static void ArrangeForLayout(BYTE *container) {
@@ -972,6 +1009,7 @@ static void ArrangeForLayout(BYTE *container) {
                 if (IsRow(children[k]) && IsVisible(children[k]) && NodeOf(children[k]) && HasBackdrop(children[k]) && LastInside(children, count, k) == i) padding += BottomOffset;
         SetRowPadding(row, padding);
     }
+    PlaceHiddenRows(container);
     Projecting = FALSE;
 }
 
@@ -1037,7 +1075,8 @@ static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time)
         for (int i = 0; i < ContainerCount; i++)
             if (Containers[i].owner && ContainerIsLive(Containers[i].view)) ((Rebuild)(Base + Native.rebuild))((void *)Containers[i].owner, FALSE);
     }
-    if (!FolderCount) return;
+    for (int i = 0; i < ContainerCount; i++)
+        if (ContainerIsLive(Containers[i].view)) PlaceHiddenRows(Containers[i].view);
     BOOL moving = BlocksMoving;
     BlocksMoving = FALSE;
     for (int i = 0; i < ContainerCount; i++) {
