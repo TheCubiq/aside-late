@@ -15,6 +15,7 @@
 #define BUTTON_STATES 3
 #define MAX_TRACKED_ROWS 256
 #define MAX_MOTIONS 256
+#define MAX_INDENTS 64
 #define MOTION_MS 180
 #define ANIMATOR_ROWS 0xb8
 #define ANIMATION_VALUE_SLOT 4
@@ -64,6 +65,14 @@ typedef struct {
     int base[4];
     int added;
 } RowPadding;
+
+// A loaded row on its way to another level: how many levels from there it still is, and how far its parts have moved.
+typedef struct {
+    BYTE *row;
+    double from, shown;
+    int movedLeft, movedRight;
+    ULONGLONG start;
+} IndentMotion;
 
 // A backdrop's height as it's shown on the way to what it should be. Aside removes a folded folder's rows at once, so
 // it can't just follow them.
@@ -152,6 +161,8 @@ static int PaddingCount;
 static BlockMotion Motions[MAX_MOTIONS];
 static int MotionCount;
 static BOOL BlocksMoving, Projecting;
+static IndentMotion Indents[MAX_INDENTS];
+static int IndentCount;
 static BOOL OrderEdited, RebuildWanted;
 static BYTE *DeleteOwner;
 static LONGLONG DeleteNodeId;
@@ -479,6 +490,56 @@ static void SetBounds(BYTE *view, int x, int width) {
     if (bounds[0] != x || bounds[2] != width) ((SetViewBounds)(Base + Native.setBoundsRect))(view, &rect);
 }
 
+static IndentMotion *FindIndent(const BYTE *row) {
+    for (int i = 0; i < IndentCount; i++)
+        if (Indents[i].row == row) return &Indents[i];
+    return NULL;
+}
+
+// How far along a row is from where its nesting puts it, while it moves to another level.
+static int IndentLeft(const BYTE *row) {
+    const IndentMotion *motion = FindIndent(row);
+    return motion ? lround(motion->shown * LeftOffset) : 0;
+}
+
+static int IndentRight(const BYTE *row) {
+    const IndentMotion *motion = FindIndent(row);
+    return motion ? lround(motion->shown * RightOffset) : 0;
+}
+
+// The row has already laid itself out for where it's going, so its parts move by what's left. What's aligned to the
+// right moves with the right offset.
+static void MoveRowParts(BYTE *row, IndentMotion *motion) {
+    int left = IndentLeft(row), right = IndentRight(row);
+    const BYTE *caret = *(BYTE **)(row + Native.caretOffset), *close = *(BYTE **)(row + Native.closeOffset);
+    size_t count;
+    void **children = ChildrenOf(row, &count);
+    for (size_t i = 0; i < count; i++) {
+        BYTE *child = children[i];
+        BOOL aligned = child == close || (child == caret && CaretShown && Position == CARET_RIGHT);
+        int move = aligned ? motion->movedRight - right : left - motion->movedLeft;
+        const int *bounds = (const int *)(child + Native.boundsOffset);
+        if (move) SetBounds(child, bounds[0] + move, bounds[2]);
+    }
+    motion->movedLeft = left;
+    motion->movedRight = right;
+}
+
+static void StartIndent(BYTE *row, int inset, int target) {
+    const int *bounds = (const int *)(row + Native.boundsOffset);
+    IndentMotion *motion = FindIndent(row);
+    double shown = motion ? motion->shown : 0;
+    // Only a loaded row changes level by folding, and one that's just been made has nowhere to come from.
+    if (!LoadedRise || !LeftOffset || !row[Native.loadedOffset] || !bounds[2] || row[Native.dragActiveOffset]) return;
+    if (!motion) {
+        if (IndentCount == MAX_INDENTS) return;
+        motion = &Indents[IndentCount++];
+        *motion = (IndentMotion){.row = row};
+    }
+    motion->from = motion->shown = shown + (double)(inset - target) / LeftOffset;
+    motion->start = GetTickCount64();
+}
+
 // Rearranges what Aside just laid out, keeping the gaps it left.
 static void PlaceCaret(BYTE *row) {
     BYTE *leading = *(BYTE **)(row + Native.leadingOffset), *caret = *(BYTE **)(row + Native.caretOffset), *title = *(BYTE **)(row + Native.titleOffset);
@@ -520,6 +581,11 @@ static void RowLayout(void *view, void *key) {
     OriginalRowLayout(view, key);
     bounds[2] = width;
     PlaceCaret(row);
+    IndentMotion *motion = FindIndent(row);
+    if (motion) {
+        motion->movedLeft = motion->movedRight = 0;
+        MoveRowParts(row, motion);
+    }
 }
 
 // The caret turns by a share of a half turn that Aside animates. Giving it another share while it paints is all an
@@ -559,6 +625,8 @@ static void RowPaint(void *view, void *canvas) {
     const BYTE *node = Learned ? NodeOf(row) : NULL, *owner = node ? OwnerOf(row) : NULL;
     BYTE hovered = row[Native.hoverOffset];
     if (node && *(const int *)(node + Native.nodeTypeOffset) && (FolderHover == HOVER_NEVER || (FolderHover == HOVER_COLLAPSED && owner && FolderIsOpen(owner, node)))) row[Native.hoverOffset] = 0;
+    left = max(left + IndentLeft(row), 0);
+    right = max(right + IndentRight(row), 0);
     if ((!left && !right) || width <= left + right) {
         OriginalRowPaint(view, canvas);
         row[Native.hoverOffset] = hovered;
@@ -867,6 +935,11 @@ static const BYTE *FindRowOf(const BYTE *container, const BYTE *node) {
     return NULL;
 }
 
+static double Eased(ULONGLONG start) {
+    double done = min((double)(GetTickCount64() - start) / MOTION_MS, 1.0);
+    return done * done * (3 - 2 * done);
+}
+
 static void ContainerPaint(void *view, void *canvas) {
     OriginalContainerPaint(view, canvas);
     PaintFolders(view, canvas);
@@ -880,7 +953,7 @@ static void NarrowRows(BYTE *container, int sign) {
     for (size_t i = 0; i < count; i++) {
         BYTE *row = children[i];
         if (!IsRow(row)) continue;
-        int depth = RowDepth(row), left = depth * LeftOffset, right = depth * RightOffset;
+        int depth = RowDepth(row), left = max(depth * LeftOffset + IndentLeft(row), 0), right = max(depth * RightOffset + IndentRight(row), 0);
         int *bounds = (int *)(row + Native.boundsOffset);
         bounds[0] += sign * left;
         bounds[2] -= sign * (left + right);
@@ -994,6 +1067,8 @@ static void ArrangeForLayout(BYTE *container) {
         int inset = Native.indentBase + RowDepth(row) * LeftOffset;
         // Only a showing row lays itself out and takes this up.
         if (layout && IsVisible(row) && !row[Native.collapsedOffset] && *(int *)(layout + Native.insetLeftOffset) != inset) {
+            StartIndent(row, *(int *)(layout + Native.insetLeftOffset), inset);
+            *(int *)(layout + Native.insetLeftOffset) = inset;
             void **vtable = *(void ***)row;
             ((SizeChanged)vtable[Native.sizeChangedSlot])(row);
             Repaint(row);
@@ -1052,6 +1127,36 @@ static BOOL ContainerIsLive(const BYTE *view) {
     return FALSE;
 }
 
+static BOOL RowIsLive(const BYTE *row) {
+    for (int i = 0; i < ContainerCount; i++) {
+        if (!ContainerIsLive(Containers[i].view)) continue;
+        size_t count;
+        void **children = ChildrenOf(Containers[i].view, &count);
+        for (size_t j = 0; j < count; j++)
+            if (children[j] == row) return TRUE;
+    }
+    return FALSE;
+}
+
+static void AdvanceIndents(void) {
+    for (int i = 0; i < IndentCount; i++) {
+        IndentMotion *motion = &Indents[i];
+        if (!RowIsLive(motion->row)) {
+            *motion = Indents[--IndentCount];
+            i--;
+            continue;
+        }
+        double eased = Eased(motion->start);
+        motion->shown = motion->from * (1 - eased);
+        MoveRowParts(motion->row, motion);
+        Repaint(motion->row);
+        BlocksMoving = TRUE;
+        if (eased < 1.0) continue;
+        *motion = Indents[--IndentCount];
+        i--;
+    }
+}
+
 // Aside puts the active tab first by looking for it just before its list of loaded tabs. Jumping over that leaves the list.
 static void ApplyActiveOrder(void) {
     if (!Native.activeOrderSite || OrderEdited == !ActiveFirst) return;
@@ -1075,6 +1180,7 @@ static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time)
         for (int i = 0; i < ContainerCount; i++)
             if (Containers[i].owner && ContainerIsLive(Containers[i].view)) ((Rebuild)(Base + Native.rebuild))((void *)Containers[i].owner, FALSE);
     }
+    AdvanceIndents();
     for (int i = 0; i < ContainerCount; i++)
         if (ContainerIsLive(Containers[i].view)) PlaceHiddenRows(Containers[i].view);
     BOOL moving = BlocksMoving;
@@ -1194,9 +1300,13 @@ static void ArrangeRows(void) {
         void **children = ChildrenOf(Containers[i].view, &count);
         for (size_t j = 0; j < count; j++) {
             if (!IsRow(children[j])) continue;
-            void **rowVtable = *(void ***)children[j];
-            ((SizeChanged)rowVtable[Native.sizeChangedSlot])(children[j]);
-            Repaint(children[j]);
+            BYTE *row = children[j];
+            void **rowVtable = *(void ***)row;
+            // An option changing is no reason to move anything gradually.
+            BYTE *layout = *(BYTE **)(row + Native.rowLayoutOffset);
+            if (Enabled && Learned && layout && !row[Native.collapsedOffset]) *(int *)(layout + Native.insetLeftOffset) = Native.indentBase + RowDepth(row) * LeftOffset;
+            ((SizeChanged)rowVtable[Native.sizeChangedSlot])(row);
+            Repaint(row);
         }
         Repaint(Containers[i].view);
     }
@@ -1275,6 +1385,7 @@ PATCH_DISABLE() {
     if (Timer) KillTimer(NULL, Timer);
     Timer = 0;
     MenuTick();
+    IndentCount = 0;
     OrderEdited = FALSE;
     RebuildWanted = FALSE;
     for (int i = 0; i < ContainerCount; i++) {
