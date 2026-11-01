@@ -175,7 +175,7 @@ static BOOL LoadedRise, ActiveFirst;
 static FolderHoverMode FolderHover;
 static FolderUnloadMode FolderUnload;
 static BOOL UnloadAnimated = TRUE;
-static int BottomOffset = 4;
+static int BottomOffset = 4, BelowGap = 6;
 static CaretPosition Position;
 static int ClosedAngle, OpenAngle = 180;
 static int LeftOffset = 14, RightOffset = 6;
@@ -1314,7 +1314,8 @@ static void ArrangeForLayout(BYTE *container) {
         if (IsVisible(row))
             for (size_t k = 0; k < i; k++)
                 if (IsRow(children[k]) && IsVisible(children[k]) && NodeOf(children[k]) && HasBackdrop(children[k]) && LastInside(children, count, k) == i) padding += BottomOffset;
-        SetRowPadding(row, padding);
+        // Past that, outside any backdrop, is what separates the outermost one from whatever comes next.
+        SetRowPadding(row, padding ? padding + BelowGap : 0);
     }
     PlaceHiddenRows(container);
     Projecting = FALSE;
@@ -1674,6 +1675,7 @@ PATCH_OPTION() {
     else if (!strcmp(key, "nesting.left")) LeftOffset = atoi(value);
     else if (!strcmp(key, "nesting.right")) RightOffset = atoi(value);
     else if (!strcmp(key, "nesting.bottom")) BottomOffset = atoi(value);
+    else if (!strcmp(key, "nesting.below")) BelowGap = atoi(value);
     else if (!strcmp(key, "nesting.loaded")) LoadedRise = on;
     else if (!strcmp(key, "nesting.active-first")) {
         ActiveFirst = on;
