@@ -174,6 +174,7 @@ static BOOL CloseRemoves, CloseConfirms = TRUE, CloseIsMinus;
 static BOOL LoadedRise, ActiveFirst;
 static FolderHoverMode FolderHover;
 static FolderUnloadMode FolderUnload;
+static BOOL UnloadAnimated = TRUE;
 static int BottomOffset = 4;
 static CaretPosition Position;
 static int ClosedAngle, OpenAngle = 180;
@@ -733,6 +734,8 @@ static void DeleteBookmark(void) {
     ((DeleteAccepted)(Base + Native.deleteAccepted))(state, 1);
 }
 
+static const BYTE *FoldedAbove(const BYTE *row, const BYTE *owner);
+
 // A tab closes a moment after it's asked to, and that rebuilds the rows with no animation. While the guard is up a rebuild
 // only notes that it's wanted, so it can happen when the tab has gone, the way it should. The tick lets go of it.
 static void HoldRebuilds(BYTE *owner, BOOL animated) {
@@ -753,11 +756,14 @@ static void ClosePressed(void *view, void *a, void *b, void *c) {
         const BYTE *parent = *(const BYTE *const *)(row + ParentOffset);
         size_t count;
         void **children = ChildrenOf(parent, &count);
-        HoldRebuilds(owner, TRUE);
+        HoldRebuilds(owner, UnloadAnimated);
         for (size_t i = 0; i < count; i++) {
             const BYTE *other = children[i];
             if (IsRow(other) && other[Native.loadedOffset] && NodeOf(other) && IsInside(NodeOf(other), node)) ((UnloadTab)(Base + Native.unloadTab))(owner, NodeOf(other));
         }
+    } else if (Enabled && UnloadAnimated && Native.rebuildGuardOffset && Native.rebuild && owner && row[Native.loadedOffset] && FoldedAbove(row, owner)) {
+        HoldRebuilds(owner, TRUE);
+        OriginalClosePress(view, a, b, c);
     } else if (Enabled && CloseRemoves && !row[Native.loadedOffset] && node && owner && !node[Native.nodeManagedOffset]) {
         if (CloseConfirms) {
             MenuAskDeleteBookmark(owner, node);
@@ -1677,6 +1683,7 @@ PATCH_OPTION() {
         }
     }
     else if (!strcmp(key, "bookmark.unload-folder")) FolderUnload = !strcmp(value, "always") ? UNLOAD_ALWAYS : !strcmp(value, "collapsed") ? UNLOAD_COLLAPSED : UNLOAD_NEVER;
+    else if (!strcmp(key, "bookmark.unload-animated")) UnloadAnimated = on;
     else if (!strcmp(key, "backdrop.hover")) FolderHover = on ? HOVER_ALWAYS : !strcmp(value, "collapsed") ? HOVER_COLLAPSED : HOVER_NEVER;
     else if (!strcmp(key, "bookmark.remove")) CloseRemoves = on;
     else if (!strcmp(key, "bookmark.confirm")) CloseConfirms = on;

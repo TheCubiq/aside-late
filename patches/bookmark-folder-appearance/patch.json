@@ -20,6 +20,7 @@
     {"group": "Bookmarks", "key": "bookmark.remove", "type": "switch", "title": "X removes unloaded bookmarks", "default": false},
     {"group": "Bookmarks", "key": "bookmark.confirm", "type": "switch", "title": "Ask before removing", "when": "bookmark.remove", "default": true},
     {"group": "Bookmarks", "key": "bookmark.minus", "type": "switch", "title": "Minus instead of X when loaded", "default": false},
-    {"group": "Bookmarks", "key": "bookmark.unload-folder", "type": "select", "title": "Button to unload a folder's tabs", "default": "never", "choices": [{"value": "never", "title": "Never"}, {"value": "collapsed", "title": "When collapsed"}, {"value": "always", "title": "Always"}]}
+    {"group": "Bookmarks", "key": "bookmark.unload-folder", "type": "select", "title": "Button to unload a folder's tabs", "default": "never", "choices": [{"value": "never", "title": "Never"}, {"value": "collapsed", "title": "When collapsed"}, {"value": "always", "title": "Always"}]},
+    {"group": "Bookmarks", "key": "bookmark.unload-animated", "type": "switch", "title": "Animate unloading from a collapsed folder", "default": true}
   ]
 }
