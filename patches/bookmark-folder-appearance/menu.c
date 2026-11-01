@@ -348,7 +348,7 @@ void MenuOpen(BYTE *row, BYTE *owner, const BYTE *node, POINT screen, const Menu
     void *changeIcon = NewItem(L"Change icon", Native->changeIconIcon, ACTION_CHANGE_ICON, TRUE);
     ItemAnchors[0] = changeIcon;
     Add(view, changeIcon, ChildCountOffset);
-    Add(view, NewItem(L"Reset appearance", Native->resetIcon, ACTION_RESET, FALSE), ChildCountOffset);
+    if (Choices.color >= 0 || Choices.icon) Add(view, NewItem(L"Reset appearance", Native->resetIcon, ACTION_RESET, FALSE), ChildCountOffset);
     Add(view, NewItem(L"Rename", Native->renameIcon, COMMAND_RENAME, FALSE), ChildCountOffset);
     Add(view, NewItem(L"Delete", Native->deleteIcon, COMMAND_DELETE, FALSE), ChildCountOffset);
     Add(view, NewItem(L"Manage Bookmarks", Native->manageIcon, COMMAND_MANAGE, FALSE), ChildCountOffset);
