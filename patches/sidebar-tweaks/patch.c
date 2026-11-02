@@ -3,6 +3,7 @@
 // Aside's controller is a state machine that asks a callback for the cursor and some rects, and works out from those
 // whether the sidebar should be showing. So nothing here shows or hides anything: it answers that callback differently.
 
+#include <math.h>
 #include <stdint.h>
 #include "resolve.h"
 
@@ -15,6 +16,9 @@
 // instead of in it.
 #define NATIVE_STRIP 32
 #define PAST_PANEL 100
+#define DEFAULT_REGION_WIDTH 280
+#define CARD_MARGIN 8
+#define MOTION_MS 180
 #define STATE_CLOSED 0
 #define STATE_OPENING 1
 #define STATE_CLOSING 3
@@ -32,19 +36,35 @@ typedef struct {
 } Input;
 typedef void *(*GetInput)(void *view, Input *input);
 typedef void (*Evaluate)(void *controller);
+typedef void (*Layout)(void *view, void *key);
+typedef void (*SetVisible)(void *view, BOOL visible);
+
+typedef struct {
+    int x, y, width, height;
+} ViewRect;
+
+typedef void (*SetBounds)(void *view, const ViewRect *rect);
+typedef void (*SchedulePaint)(void *view);
 typedef struct {
     void **slot;     // Where the callback keeps the method it runs.
-    BYTE *view;
+    BYTE *view;      // The sidebar's view, which owns the controller.
     void *vtable;
     Input last;      // What it was last told while its window was active.
     BOOL known;
     ULONGLONG entered;
     BOOL leaveMoved;
+    BYTE *browser;          // The BrowserView holding this sidebar, once it's laid out.
+    int regionWidth;        // How wide the sidebar last was outside fullscreen.
+    BOOL revealedFullscreen;
+    ULONGLONG enteredAt, leftAt;
+    double from, slid;      // How far it's slid in, and where that started from.
+    ULONGLONG movedAt;      // 0 when it isn't moving.
 } Watched;
 
 static BYTE *Base;
 static BOOL KeepForMenus = TRUE;
 static BOOL EdgeEnabled = TRUE;
+static BOOL FullscreenReveal;
 static int EdgeWidth = 8;
 static int EnterMs = 100;
 static int LeaveMs = 500;
@@ -55,6 +75,9 @@ static volatile BOOL Enabled;
 static HANDLE WatchThread;
 static int LastWindowCount = -1;
 static BOOL HideOnBlurEdited;
+static Layout OriginalLayout;
+static DWORD ParentOffset;
+static BOOL LayoutHooked;
 
 
 static void ApplyHideOnBlur(void) {
@@ -123,6 +146,124 @@ static void HoldOverPanel(Input *input) {
     input->overButton = 0;
 }
 
+typedef struct {
+    const int *size;
+    HWND window;
+} FullscreenSearch;
+
+// The fullscreen window that a view fills.
+static BOOL CALLBACK FindFullscreen(HWND window, LPARAM out) {
+    FullscreenSearch *search = (FullscreenSearch *)out;
+    RECT rect;
+    MONITORINFO monitor = {.cbSize = sizeof monitor};
+    char name[32];
+    if (!IsWindowVisible(window) || GetWindow(window, GW_OWNER) || (GetWindowLongW(window, GWL_STYLE) & WS_CAPTION) == WS_CAPTION) return TRUE;
+    if (!GetClassNameA(window, name, sizeof name) || strncmp(name, WIDGET_CLASS, sizeof WIDGET_CLASS - 1)) return TRUE;
+    if (!GetWindowRect(window, &rect) || !GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor) || !EqualRect(&rect, &monitor.rcMonitor)) return TRUE;
+    UINT dpi = GetDpiForWindow(window);
+    if (!dpi || MulDiv(rect.right - rect.left, 96, dpi) != search->size[2] || MulDiv(rect.bottom - rect.top, 96, dpi) != search->size[3]) return TRUE;
+    search->window = window;
+    return FALSE;
+}
+
+static HWND FullscreenWindowOf(const BYTE *view) {
+    FullscreenSearch search = {(const int *)(view + BoundsOffset), NULL};
+    if (BoundsOffset) EnumThreadWindows(GetCurrentThreadId(), FindFullscreen, (LPARAM)&search);
+    return search.window;
+}
+
+// The layout hides the sidebar's view in fullscreen, and showing it tells its parent, which lays out again, for ever. So
+// for that long it has no parent to tell.
+static void ShowRegion(BYTE *region, const BYTE *browser, BOOL visible) {
+    if (!region[VisibleOffset] == !visible) return;
+    if (!ParentOffset) {
+        for (DWORD offset = 0x100; offset < 0x300 && !ParentOffset; offset += 8) {
+            const BYTE *held;
+            if (SafeRead(region + offset, &held, sizeof held) && held == browser) ParentOffset = offset;
+        }
+        if (!ParentOffset) return;
+    }
+    const BYTE **parent = (const BYTE **)(region + ParentOffset);
+    void **vtable = *(void ***)region;
+    *parent = NULL;
+    ((SetVisible)vtable[SetVisibleSlot])(region, visible);
+    *parent = browser;
+}
+
+// Set out as Aside's own hover does: a card with a margin around it.
+static void PlaceRevealed(const Watched *watched) {
+    const int *window = (const int *)(watched->browser + BoundsOffset);
+    int width = watched->regionWidth ? watched->regionWidth : DEFAULT_REGION_WIDTH;
+    int away = (int)lround((width + CARD_MARGIN) * (1 - watched->slid));
+    int x = watched->last.right ? window[2] - width - CARD_MARGIN + away : CARD_MARGIN - away;
+    ViewRect rect = {x, CARD_MARGIN, width, window[3] - 2 * CARD_MARGIN};
+    ShowRegion(watched->view, watched->browser, TRUE);
+    ((SetBounds)(Base + SetBoundsRva))(watched->view, &rect);
+    ((SchedulePaint)(Base + SchedulePaintRva))(watched->view);
+}
+
+static void BrowserLayout(void *view, void *key) {
+    OriginalLayout(view, key);
+    BYTE *browser = view;
+    BYTE *region = *(BYTE **)(browser + RegionOffset);
+    Watched *watched = region ? FindWatched(region) : NULL;
+    if (!watched) return;
+    watched->browser = browser;
+    const int *bounds = (const int *)(region + BoundsOffset);
+    if (!watched->revealedFullscreen && !watched->movedAt) {
+        if (bounds[2] && !FullscreenWindowOf(browser)) watched->regionWidth = bounds[2];
+        return;
+    }
+    PlaceRevealed(watched);
+}
+
+static void LayOut(BYTE *browser) {
+    void **vtable = *(void ***)browser;
+    browser[NeedsLayoutOffset] = 1;
+    ((Layout)vtable[LayoutSlot])(browser, NULL);
+}
+
+// The controller isn't told anything in a fullscreen window, and answering for it only makes it reset. So this works from
+// the cursor, with the same options.
+static void UpdateFullscreenReveal(Watched *watched) {
+    HWND window = watched->browser && FullscreenReveal && EdgeEnabled ? FullscreenWindowOf(watched->browser) : NULL;
+    BOOL wanted = FALSE;
+    POINT cursor;
+    RECT rect;
+    ULONGLONG now = GetTickCount64();
+    if (window && GetCursorPos(&cursor) && GetWindowRect(window, &rect)) {
+        int width = MulDiv((watched->regionWidth ? watched->regionWidth : DEFAULT_REGION_WIDTH) + 2 * CARD_MARGIN, GetDpiForWindow(window), 96);
+        BOOL right = watched->known && watched->last.right;
+        int fromEdge = right ? rect.right - 1 - cursor.x : cursor.x - rect.left;
+        HWND under = WindowFromPoint(cursor);
+        BOOL onWindow = under && GetAncestor(under, GA_ROOT) == window;
+        if (watched->revealedFullscreen) {
+            if (HasPopup() || (onWindow && fromEdge >= 0 && fromEdge < width)) watched->leftAt = 0;
+            else if (!watched->leftAt) watched->leftAt = now;
+            wanted = !watched->leftAt || now - watched->leftAt < (ULONGLONG)LeaveMs;
+        } else {
+            if (!onWindow || fromEdge < 0 || fromEdge >= EdgeWidth) watched->enteredAt = 0;
+            else if (!watched->enteredAt) watched->enteredAt = now;
+            wanted = watched->enteredAt && now - watched->enteredAt >= (ULONGLONG)EnterMs;
+        }
+    }
+    if (wanted != watched->revealedFullscreen) {
+        watched->revealedFullscreen = wanted;
+        watched->enteredAt = watched->leftAt = 0;
+        watched->from = watched->slid;
+        watched->movedAt = now;
+    }
+    if (!watched->movedAt) return;
+    double done = min((double)(now - watched->movedAt) / MOTION_MS, 1.0);
+    watched->slid = watched->from + ((wanted ? 1 : 0) - watched->from) * done * done * (3 - 2 * done);
+    if (done >= 1) watched->movedAt = 0;
+    // Still a window that's fullscreen, or it left that and the layout has the view back.
+    if (window || wanted || watched->movedAt) PlaceRevealed(watched);
+    if (watched->movedAt || wanted) return;
+    ShowRegion(watched->view, watched->browser, FALSE);
+    LayOut(watched->browser);
+}
+
 static BOOL IsLive(const Watched *watched) {
     void *vtable;
     return SafeRead(watched->view, &vtable, sizeof vtable) && vtable == watched->vtable;
@@ -146,6 +287,7 @@ static void CALLBACK Tick(HWND window, UINT message, UINT_PTR timer, DWORD time)
         int state = *(const int *)(controller + StateOffset);
         BOOL atEdge = EdgeEnabled && haveCursor && watched->known && InEdge(watched->last.window, watched->last.right, cursor.x, cursor.y);
         if (state != STATE_CLOSED || watched->entered || atEdge) ((Evaluate)(Base + EvaluateRva))(controller);
+        if (RegionOffset) UpdateFullscreenReveal(watched);
     }
 }
 
@@ -217,9 +359,10 @@ static void FindViews(void *unused) {
         BYTE *controller;
         if (!SafeRead(view + ControllerOffset, &controller, sizeof controller) || !controller || *(void **)controller != state) continue;
         Views[ViewCount++] = (Watched){.slot = slot, .view = view, .vtable = vtable};
+        if (RegionOffset && !LayoutHooked) LayoutHooked = HookVtable((void **)(Base + BrowserVtableRva), LayoutSlot, BrowserLayout, (void **)&OriginalLayout);
         *slot = AnswerInput;
     }
-    ModLog("sidebar-tweaks: %d windows", ViewCount);
+    ModLog("sidebar-tweaks: %d windows, sidebar view +%#lx", ViewCount, RegionOffset);
 }
 
 static BOOL CALLBACK CountWindow(HWND window, LPARAM count) {
@@ -252,6 +395,7 @@ PATCH_OPTION() {
         if (Enabled) ApplyHideOnBlur();
     }
     else if (!strcmp(key, "edge.enabled")) EdgeEnabled = on;
+    else if (!strcmp(key, "edge.fullscreen")) FullscreenReveal = on;
     else if (!strcmp(key, "edge.width")) EdgeWidth = atoi(value);
     else if (!strcmp(key, "delay.enter")) EnterMs = atoi(value);
     else if (!strcmp(key, "delay.leave")) LeaveMs = atoi(value);
@@ -274,10 +418,16 @@ PATCH_ENABLE() {
 PATCH_DISABLE() {
     Enabled = FALSE;
     HideOnBlurEdited = FALSE;
+    LayoutHooked = FALSE;
     if (Timer) KillTimer(NULL, Timer);
     Timer = 0;
-    for (int i = 0; i < ViewCount; i++)
-        if (IsLive(&Views[i])) *Views[i].slot = (void *)(Base + GetInputRva);
+    for (int i = 0; i < ViewCount; i++) {
+        if (!IsLive(&Views[i])) continue;
+        *Views[i].slot = (void *)(Base + GetInputRva);
+        if (!Views[i].revealedFullscreen && !Views[i].movedAt) continue;
+        ShowRegion(Views[i].view, Views[i].browser, FALSE);
+        LayOut(Views[i].browser);
+    }
     ViewCount = 0;
     if (WatchThread) CloseHandle(WatchThread);
     WatchThread = NULL;

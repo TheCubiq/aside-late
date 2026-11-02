@@ -6,6 +6,7 @@
   "options": [
     {"key": "menus.keep", "type": "switch", "title": "Stay open while a menu is open", "default": true},
     {"key": "edge.enabled", "type": "switch", "title": "Reveal from the window's edge", "default": true},
+    {"key": "edge.fullscreen", "type": "switch", "title": "Reveal in fullscreen", "when": "edge.enabled", "default": false},
     {"key": "edge.width", "type": "slider", "title": "Edge width", "when": "edge.enabled", "default": 8, "min": 1, "max": 64, "unit": "px"},
     {"key": "delay.enter", "type": "slider", "title": "Delay on enter", "default": 100, "min": 0, "max": 1000, "step": 10, "unit": "ms"},
     {"key": "delay.leave", "type": "slider", "title": "Delay on leave", "default": 500, "min": 0, "max": 2000, "step": 10, "unit": "ms"}

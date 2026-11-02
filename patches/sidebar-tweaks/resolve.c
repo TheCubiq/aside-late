@@ -11,6 +11,8 @@ DWORD StateOffset;
 DWORD LeaveTimeOffset;
 DWORD HideOnBlurRva;
 LONGLONG NativeLeaveUs;
+DWORD BrowserVtableRva, BoundsOffset, SchedulePaintRva, SetBoundsRva, RegionOffset, VisibleOffset, NeedsLayoutOffset;
+int LayoutSlot, SetVisibleSlot;
 
 static DWORD FindBytes(const Lookup *lookup, DWORD start, DWORD end, const void *bytes, size_t size) {
     for (DWORD rva = start; rva + size <= end; rva++)
@@ -108,9 +110,30 @@ static void FindHideOnBlur(const Lookup *lookup) {
     HideOnBlurRva = found;
 }
 
+// The layout asks if the sidebar's view is showing, and then the same of the horizontal tab strip:
+// mov rax,[rsi+region]; test rax,rax; je; cmp byte [rax+visible],1; jne; mov rax,[rsi+x]; mov r14b,1
+static void FindFullscreenLayout(const Lookup *lookup) {
+    const RUNTIME_FUNCTION *layout = LookupTraced(lookup, "BrowserView::Layout");
+    if (!layout || !LookupViewLayout(lookup, &BoundsOffset, &SchedulePaintRva, &SetBoundsRva, &LayoutSlot) || !LookupVisibility(lookup, &SetVisibleSlot, &VisibleOffset)) return;
+    if (!(NeedsLayoutOffset = LookupNeedsLayout(lookup, layout))) return;
+    size_t count;
+    const Reference *entries = LookupPointers(lookup, layout->BeginAddress, &count);
+    if (count != 1) return;
+    BrowserVtableRva = entries[0].site - LayoutSlot * sizeof(void *);
+    for (DWORD rva = layout->BeginAddress; rva + 40 <= layout->EndAddress; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (memcmp(p, "\x48\x8b\x86", 3) || memcmp(p + 7, "\x48\x85\xc0\x0f\x84", 5) || memcmp(p + 16, "\x80\xb8", 2)) continue;
+        if (*(const DWORD *)(p + 18) != VisibleOffset || p[22] != 1 || memcmp(p + 23, "\x0f\x85", 2) || memcmp(p + 29, "\x48\x8b\x86", 3) || memcmp(p + 36, "\x41\xb6\x01", 3)) continue;
+        RegionOffset = *(const DWORD *)(p + 3);
+        return;
+    }
+    ModLog("sidebar-tweaks can't reveal the sidebar in fullscreen in this build");
+}
+
 const char *ResolveController(const Lookup *lookup) {
     const char *missing = FindEvaluate(lookup);
     if (!missing) missing = FindGetInput(lookup);
     if (!missing) FindHideOnBlur(lookup);
+    if (!missing) FindFullscreenLayout(lookup);
     return missing;
 }
