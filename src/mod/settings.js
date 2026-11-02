@@ -722,7 +722,7 @@ function optionsContent(patch, controls) {
   }
   const fields = new Map();
   const depend = () => {
-    for (const [key, fieldset] of fields) fieldset.disabled = currentValue(patch.id, key) !== "true";
+    for (const [when, fieldset] of fields) fieldset.disabled = !whenHolds(patch.id, when);
   };
   const send = new Map();
   const box = list => {
@@ -868,9 +868,15 @@ function syncOptions() {
     }
   }
   for (const fieldset of document.querySelectorAll('[data-slot="dialog-content"] fieldset')) {
-    const key = fieldset.dataset.when;
-    if (key) fieldset.disabled = currentValue(patch.id, key) !== "true";
+    const when = fieldset.dataset.when;
+    if (when) fieldset.disabled = !whenHolds(patch.id, when);
   }
+}
+
+// An option's "when" is a switch that has to be on, or "key=value".
+function whenHolds(patchId, when) {
+  const [key, value = "true"] = when.split("=");
+  return String(currentValue(patchId, key)) === value;
 }
 
 function availableRows() {
