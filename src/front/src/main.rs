@@ -250,7 +250,7 @@ impl App_ {
             (Some(note), ..) => note.clone(),
             (_, true, _) => "The patches are built. Starting takes a moment.".into(),
             (_, _, true) => "This builds the patches first, which takes about a minute.".into(),
-            _ => format!("The first time, this downloads a {} MB compiler and builds the patches.", engine::COMPILER_MEGABYTES).into(),
+            _ => format!("The first time, this downloads a {} MB compiler, {} MB once unpacked, and builds the patches.", engine::COMPILER_MEGABYTES, engine::COMPILER_UNPACKED_MEGABYTES).into(),
         };
         let found = if paths.version.is_empty() { "Aside found".to_string() } else { format!("Aside {} found", paths.version) };
         v_flex()

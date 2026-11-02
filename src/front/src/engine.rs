@@ -25,7 +25,8 @@ const COMPILER_SHA256: &str = "54c2bb9962e8a30c8270e34c5efc3d5fee579f53087fa7d43
 // The archive's size when the server doesn't say, and how many files come out of it, to show progress by.
 const COMPILER_BYTES: u64 = 68_801_240;
 pub const COMPILER_MEGABYTES: u64 = (COMPILER_BYTES + 500_000) / 1_000_000;
-const COMPILER_FILES: usize = 4_400;
+pub const COMPILER_UNPACKED_MEGABYTES: u64 = 740;
+const COMPILER_FILES: usize = 9_451;
 const NO_WINDOW: u32 = 0x0800_0000;
 const MAX_JOBS: usize = 6;
 

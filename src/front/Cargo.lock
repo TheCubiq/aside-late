@@ -275,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "aside-late-front"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "gpui-kit",
  "miniz_oxide 0.8.9",
