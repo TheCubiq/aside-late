@@ -19,6 +19,7 @@
 #define MOTION_MS 180
 #define CLIP_INTERSECT 1
 #define MAX_FADED_CLASSES 128
+#define MAX_LOADING_BAR 4
 
 typedef struct {
     int x, y, width, height;
@@ -51,7 +52,7 @@ typedef struct {
 typedef struct {
     BYTE *view;
     void *vtable;
-    BYTE *top, *contents, *captions, *shadow, *frame;
+    BYTE *top, *contents, *captions, *shadow, *frame, *toolbar, *address;
     ViewRect topRect, contentsRect, captionsRect, shadowRect;  // Where Aside's layout put them.
     int sidebarHeader;       // How tall the sidebar's header is with the bar hidden. 0 until that's been seen.
     BOOL revealed;
@@ -87,8 +88,8 @@ typedef struct {
     Paint original;
 } FadedClass;
 
-static FadedClass FadedClasses[MAX_FADED_CLASSES];
-static int FadedClassCount;
+static FadedClass FadedClasses[MAX_FADED_CLASSES], TintedClasses[MAX_FADED_CLASSES];
+static int FadedClassCount, TintedClassCount;
 
 static BOOL CloseGap = TRUE, CollapseTop, SquareCorners, BarTakesInset = TRUE, SidebarSideTakesInset = TRUE;
 static Reveal RevealStyle;
@@ -277,8 +278,12 @@ static void PlaceWindow(Window *window) {
     MoveView(window->contents, (ViewRect){pane.x, pane.y + taken, pane.width, pane.height - taken});
     ForEachContainer(window, ClipContainer);
     if (window->shadow) {
+        // It's a strip down the side of a pane that fills the window, and an inset pane has no use for that: the strip would run on
+        // past the page's corner. Nor is a bar with no background part of what it's beside.
         ViewRect around = window->shadowRect;
-        MoveView(window->shadow, (ViewRect){around.x + left, around.y + Inset, around.width - left - right, around.height - 2 * Inset});
+        int above = Uncovers() ? taken : 0;
+        if (Inset) MoveView(window->shadow, (ViewRect){around.x, around.y, 0, 0});
+        else MoveView(window->shadow, (ViewRect){around.x, around.y + above, around.width, around.height - above});
     }
     // Its background is painted just once otherwise, for wherever it was then.
     if (window->frame) ((SchedulePaint)(Base + Native.schedulePaint))(window->frame);
@@ -461,6 +466,11 @@ static void FadedPaint(void *view, void *canvas) {
     Paint original = NULL;
     for (int i = 0; i < FadedClassCount && !original; i++)
         if (FadedClasses[i].vtable == *(void **)view) original = FadedClasses[i].original;
+    // The bar's own paint is its background, and the loading bar along its bottom draws a line there even with nothing loading.
+    // All that's wanted of the bar here is what's on it.
+    const BYTE *parent = *(BYTE **)((BYTE *)view + ChildrenOffset - sizeof(void *));
+    for (int i = 0; i < WindowCount; i++)
+        if (Enabled && Uncovers() && (view == Windows[i].top || (parent == Windows[i].top && BoundsOf(view).height <= MAX_LOADING_BAR))) return;
     double alpha = Enabled && Native.canvasAlphaSlot ? AlphaOf(view) : 1;
     if (alpha >= 1) {
         original(view, canvas);
@@ -506,6 +516,55 @@ static void HolderLayout(void *view, void *key) {
     OriginalHolderLayout(view, key);
 }
 
+// The toolbar has the page's tint behind it, up to the window's buttons, which have none, and so does the address bar and what's
+// in it. A class can be elsewhere too, so this looks at where the view is.
+static BOOL IsTinted(const BYTE *view) {
+    for (int i = 0; i < WindowCount; i++)
+        if (view == Windows[i].toolbar) return TRUE;
+    for (const BYTE *up = view; up; up = *(BYTE *const *)(up + ChildrenOffset - sizeof(void *)))
+        for (int i = 0; i < WindowCount; i++)
+            if (up == Windows[i].address) return TRUE;
+    return FALSE;
+}
+
+static void TintedBackground(void *view, void *canvas) {
+    Paint original = NULL;
+    for (int i = 0; i < TintedClassCount && !original; i++)
+        if (TintedClasses[i].vtable == *(void **)view) original = TintedClasses[i].original;
+    if (!Enabled || !Uncovers() || !IsTinted(view)) original(view, canvas);
+}
+
+static void HookTinted(const BYTE *view) {
+    void *vtable = *(void *const *)view;
+    int found = 0;
+    while (found < TintedClassCount && TintedClasses[found].vtable != vtable) found++;
+    if (found < TintedClassCount || TintedClassCount == MAX_FADED_CLASSES) return;
+    FadedClass *entry = &TintedClasses[TintedClassCount];
+    entry->vtable = vtable;
+    if (HookVtable(vtable, Native.paintBackgroundSlot, TintedBackground, (void **)&entry->original)) TintedClassCount++;
+}
+
+static void HookTintedIn(const BYTE *view) {
+    HookTinted(view);
+    size_t count;
+    void **children = ChildrenOf(view, &count);
+    for (size_t i = 0; i < count; i++) HookTintedIn(children[i]);
+}
+
+// The toolbar is first in the bar, and the address bar is the widest thing in the toolbar.
+static void FindTinted(Window *window) {
+    size_t count;
+    void **children = ChildrenOf(window->top, &count);
+    window->toolbar = count ? children[0] : NULL;
+    window->address = NULL;
+    if (!window->toolbar) return;
+    children = ChildrenOf(window->toolbar, &count);
+    for (size_t i = 0; i < count; i++)
+        if (!window->address || BoundsOf(children[i]).width > BoundsOf(window->address).width) window->address = children[i];
+    HookTinted(window->toolbar);
+    if (window->address) HookTintedIn(window->address);
+}
+
 // A page's view lays what holds it out to fill it, whenever it likes.
 static void PageLayout(void *view, void *key) {
     OriginalPageLayout(view, key);
@@ -537,7 +596,8 @@ static void SidebarLayout(void *view, void *key) {
     for (size_t i = 0; i < count; i++) {
         ViewRect below = BoundsOf(children[i]);
         if (children[i] == header || below.y < rect.y + rect.height) continue;
-        MoveView(children[i], (ViewRect){below.x, below.y - extra, below.width, below.height + extra});
+        BOOL reachesBottom = below.y + below.height >= BoundsOf(view).height;
+        MoveView(children[i], (ViewRect){below.x, below.y - extra, below.width, reachesBottom ? below.height + extra : below.height});
     }
     MoveView(header, (ViewRect){rect.x, rect.y, rect.width, window->sidebarHeader});
     // Its buttons are centred in the height it asked for, not the height it has.
@@ -590,6 +650,7 @@ static void AfterLayout(void *view) {
         HookVtable((void **)(Base + Native.topVtable), Native.paintBackgroundSlot, TopBackground, (void **)&OriginalTopBackground);
     }
     if (!window->top || !window->contents) return;
+    if (Uncovers()) FindTinted(window);
     if (Uncovers() && Native.canvasAlphaSlot) {
         FadeClassesIn(window->top);
         if (window->captions) FadeClassesIn(window->captions);
@@ -686,7 +747,7 @@ PATCH_DISABLE() {
     OriginalPageLayout = OriginalContentsLayout = OriginalTopLayout = OriginalHolderLayout = OriginalSidebarLayout = NULL;
     OriginalFramePaint = NULL;
     while (FramedCount) RestoreFrame(0);
-    FadedClassCount = 0;
+    FadedClassCount = TintedClassCount = 0;
     WindowCount = 0;
     // The hook's gone, so this puts everything back where Aside wants it.
     LayOutAll();
