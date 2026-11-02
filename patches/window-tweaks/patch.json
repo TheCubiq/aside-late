@@ -1,0 +1,15 @@
+{
+  "id": "window-tweaks",
+  "title": "Window tweaks",
+  "description": "Close the gap around a fullscreen window, collapse the top bar until it's hovered, set the inset around the page, and square its corners beside the sidebar.",
+  "tested": ["1.0.1022.1"],
+  "options": [
+    {"key": "fullscreen.gap", "type": "switch", "title": "Close the gap around a fullscreen window", "default": true},
+    {"key": "top.collapse", "type": "switch", "title": "Collapse the top bar until it's hovered", "default": false},
+    {"key": "top.reveal", "type": "select", "title": "When it's revealed", "when": "top.collapse", "default": "over", "choices": [{"value": "over", "title": "Slide over the page"}, {"value": "push", "title": "Push the page down"}, {"value": "uncover", "title": "Uncover it, like Zen"}]},
+    {"key": "inset", "type": "slider", "title": "Inset around the page", "default": 0, "min": 0, "max": 32, "unit": "px"},
+    {"key": "top.inset", "type": "switch", "title": "Move the top bar with the inset", "default": true},
+    {"key": "inset.sidebar", "type": "switch", "title": "Inset the side next to the sidebar", "default": true},
+    {"key": "corners.square", "type": "switch", "title": "Square the corners beside the sidebar", "when": "inset=0", "default": false}
+  ]
+}
