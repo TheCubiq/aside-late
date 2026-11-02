@@ -36,12 +36,19 @@ jobs:
             src/front/target
           key: front-${{ runner.os }}-${{ hashFiles('src/front/Cargo.lock') }}
 
+      # Compiles the launcher, the mod and the patches into the exe as well.
       - name: Build
         working-directory: src/front
         run: cargo build --release --locked
 
-      - name: Check the C still builds
-        run: make
+      - name: Check what's bundled needs nothing from MinGW
+        shell: bash
+        run: |
+          make
+          if objdump -p build/aside-late.exe build/aside-late-mod.dll build/patches/*/patch.dll | grep "DLL Name" | grep -Ei "libgcc|libwinpthread|libstdc"; then
+            echo "Something depends on a MinGW DLL, which people won't have." >&2
+            exit 1
+          fi
 
       - name: Publish
         shell: bash

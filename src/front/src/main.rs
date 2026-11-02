@@ -51,6 +51,8 @@ struct App_ {
     status: Shared,
     shown: Status,
     cancel: Arc<AtomicBool>,
+    /// Whether the last start was the build from source, so that trying again does the same.
+    from_source: bool,
     closes_when_done: bool,
     focus: FocusHandle,
     _work: Option<Task<()>>,
@@ -62,10 +64,10 @@ impl App_ {
         focus.focus(window, cx);
         let status = engine::new_status();
         let shown = status.lock().unwrap().clone();
-        let mut app = Self { paths: None, arguments, screen: Screen::Ready { note: None }, screen_id: 0, status, shown, cancel: Arc::new(AtomicBool::new(false)), closes_when_done, focus, _work: None };
+        let mut app = Self { paths: None, arguments, screen: Screen::Ready { note: None }, screen_id: 0, status, shown, cancel: Arc::new(AtomicBool::new(false)), from_source: false, closes_when_done, focus, _work: None };
         app.look_for_aside();
         if closes_when_done && app.paths.is_some() {
-            app.begin(window, cx);
+            app.begin(false, window, cx);
         }
         app
     }
@@ -121,14 +123,16 @@ impl App_ {
         }));
     }
 
-    fn begin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn begin(&mut self, from_source: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(paths) = self.paths.clone() else { return };
+        self.from_source = from_source;
         self.status = engine::new_status();
+        self.status.lock().unwrap().from_source = from_source;
         self.cancel = Arc::new(AtomicBool::new(false));
         self.shown = self.status.lock().unwrap().clone();
         self.show(Screen::Working, cx);
         let (status, cancel) = (self.status.clone(), self.cancel.clone());
-        self.run(move || engine::prepare(&paths, &status, &cancel), Self::prepared, window, cx);
+        self.run(move || engine::prepare(&paths, from_source, &status, &cancel), Self::prepared, window, cx);
     }
 
     fn prepared(&mut self, result: Result<(), String>, window: &mut Window, cx: &mut Context<Self>) {
@@ -150,7 +154,7 @@ impl App_ {
         }
     }
 
-    /// Everything's built by now, so the browser stays in use for as long as possible and the question comes last.
+    /// Everything's ready by now, so the browser stays in use for as long as possible and the question comes last.
     fn ask_to_close(&mut self, running: Running, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity();
         let question = match running.windows {
@@ -225,7 +229,8 @@ impl App_ {
             return;
         }
         match (event.keystroke.key.as_str(), &self.screen) {
-            ("enter", Screen::Ready { .. } | Screen::Failed(_)) => self.begin(window, cx),
+            ("enter", Screen::Ready { .. }) => self.begin(false, window, cx),
+            ("enter", Screen::Failed(_)) => self.begin(self.from_source, window, cx),
             ("enter", Screen::NoAside(_)) => {
                 self.look_for_aside();
                 cx.notify();
@@ -246,11 +251,16 @@ impl App_ {
 
     fn ready(&self, note: &Option<SharedString>, cx: &mut Context<Self>) -> Div {
         let Some(paths) = &self.paths else { return div() };
-        let about = match (&note, paths.is_built(), paths.has_compiler()) {
-            (Some(note), ..) => note.clone(),
-            (_, true, _) => "The patches are built. Starting takes a moment.".into(),
-            (_, _, true) => "This builds the patches first, which takes about a minute.".into(),
-            _ => format!("The first time, this downloads a {} MB compiler, {} MB once unpacked, and builds the patches.", engine::COMPILER_MEGABYTES, engine::COMPILER_UNPACKED_MEGABYTES).into(),
+        let built = paths.is_built();
+        let about: SharedString = match (&note, built) {
+            (Some(note), _) => note.clone(),
+            (_, true) => "Everything's ready. Starting takes a moment.".into(),
+            _ => "Takes a few seconds, with nothing to download.".into(),
+        };
+        let source_cost: SharedString = if paths.has_compiler() {
+            "Takes about a minute.".into()
+        } else {
+            format!("Downloads a {} MB compiler, about {} MB on disk.", engine::COMPILER_MEGABYTES, engine::COMPILER_UNPACKED_MEGABYTES).into()
         };
         let found = if paths.version.is_empty() { "Aside found".to_string() } else { format!("Aside {} found", paths.version) };
         v_flex()
@@ -269,8 +279,17 @@ impl App_ {
                 v_flex()
                     .w_full()
                     .gap_3()
-                    .child(Button::new("start").primary().large().w_full().label("Patch and start Aside").on_click(cx.listener(|this, _, window, cx| this.begin(window, cx))))
-                    .child(div().text_xs().text_center().text_color(cx.theme().muted_foreground).child(about)),
+                    .child(Button::new("start").primary().large().w_full().label("Patch and start Aside").on_click(cx.listener(|this, _, window, cx| this.begin(false, window, cx))))
+                    .child(div().text_xs().text_center().text_color(cx.theme().muted_foreground).child(about))
+                    .when(!built, |buttons| {
+                        buttons.child(
+                            v_flex()
+                                .w_full()
+                                .gap_0p5()
+                                .child(Button::new("source").ghost().w_full().label("Build from source instead").on_click(cx.listener(|this, _, window, cx| this.begin(true, window, cx))))
+                                .child(div().text_xs().text_center().text_color(cx.theme().muted_foreground).child(source_cost)),
+                        )
+                    }),
             )
     }
 
@@ -315,7 +334,7 @@ impl App_ {
                         v_flex()
                             .gap_0p5()
                             .when(compiler, |steps| steps.child(self.step("Downloading the compiler", detail(), Stage::Compiler, cx)).child(self.step("Unpacking the compiler", detail(), Stage::Unpacking, cx)))
-                            .child(self.step("Building the patches", detail(), Stage::Building, cx))
+                            .child(self.step(if self.shown.from_source { "Building the patches" } else { "Unpacking the patches" }, detail(), Stage::Building, cx))
                             .child(self.step("Starting Aside", None, Stage::Starting, cx)),
                     ),
             )
@@ -345,7 +364,7 @@ impl App_ {
             .size_full()
             .items_center()
             .justify_between()
-            .child(v_flex().items_center().gap_4().child(div().size(px(52.)).flex().items_center().justify_center().child(tick)).child(self.heading("Aside is running with patches", "Turn them on and off in Aside's Settings, under Patched stuff, then Mods.", cx)))
+            .child(v_flex().items_center().gap_4().child(div().size(px(52.)).flex().items_center().justify_center().child(tick)).child(self.heading("Aside is ready", "Turn on the patches you want in Aside's Settings, under Patched stuff, then Mods.", cx)))
             .child(
                 v_flex()
                     .w_full()
@@ -372,7 +391,7 @@ impl App_ {
                 v_flex()
                     .w_full()
                     .gap_2()
-                    .child(Button::new("again").primary().large().w_full().label("Try again").on_click(cx.listener(|this, _, window, cx| this.begin(window, cx))))
+                    .child(Button::new("again").primary().large().w_full().label("Try again").on_click(cx.listener(|this, _, window, cx| this.begin(this.from_source, window, cx))))
                     .when(has_log, |buttons| {
                         buttons.child(Button::new("log").ghost().w_full().label("Open the build log").on_click(cx.listener(|this, _, _, cx| {
                             if let Some(paths) = &this.paths {

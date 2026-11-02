@@ -1,5 +1,5 @@
-//! Everything that isn't the window: fetching the compiler, building the patches from the source inside this program, and starting
-//! Aside. It runs off the UI thread and leaves how far it's got in `Status`, which the window reads.
+//! Everything that isn't the window: unpacking what's built into this program or building it from source, and starting Aside. It runs
+//! off the UI thread and leaves how far it's got in `Status`, which the window reads.
 
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString, c_void};
@@ -16,8 +16,8 @@ use std::thread;
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, TRUE, WAIT_OBJECT_0};
 use windows_sys::Win32::Networking::WinHttp::*;
-use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject};
-use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, FindWindowExW, GetClassNameW, GetWindowTextW, GetWindowThreadProcessId, HWND_MESSAGE, IsWindowVisible};
+use windows_sys::Win32::System::Threading::{CreateProcessW, GetExitCodeProcess, INFINITE, OpenProcess, PROCESS_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, STARTF_USESHOWWINDOW, STARTUPINFOW, TerminateProcess, WaitForSingleObject};
+use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, FindWindowExW, GetClassNameW, GetWindowTextW, GetWindowThreadProcessId, HWND_MESSAGE, IsWindowVisible, SW_HIDE};
 
 const COMPILER_HOST: &str = "github.com";
 const COMPILER_PATH: &str = "/skeeto/w64devkit/releases/download/v2.11.0/w64devkit-x64-2.11.0.7z.exe";
@@ -30,6 +30,7 @@ const COMPILER_FILES: usize = 9_451;
 const NO_WINDOW: u32 = 0x0800_0000;
 const MAX_JOBS: usize = 6;
 
+const BUNDLE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bundle.bin"));
 const SOURCE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/source.bin"));
 const SOURCE_ID: &str = env!("ASIDE_LATE_SOURCE_ID");
 
@@ -49,12 +50,13 @@ pub struct Status {
     pub overall: f32,
     pub detail: String,
     pub compiler_needed: bool,
+    pub from_source: bool,
 }
 
 pub type Shared = Arc<Mutex<Status>>;
 
 pub fn new_status() -> Shared {
-    Arc::new(Mutex::new(Status { stage: Stage::Compiler, overall: 0.0, detail: String::new(), compiler_needed: false }))
+    Arc::new(Mutex::new(Status { stage: Stage::Building, overall: 0.0, detail: String::new(), compiler_needed: false, from_source: false }))
 }
 
 fn report(status: &Shared, stage: Stage, overall: f32, detail: impl Into<String>) {
@@ -148,17 +150,55 @@ fn installed_version(exe: &Path) -> String {
 }
 
 /// Gets everything ready to start, without touching a running Aside.
-pub fn prepare(paths: &Paths, status: &Shared, cancel: &AtomicBool) -> Result<(), String> {
-    let compiler = !paths.has_compiler() && !paths.is_built();
-    status.lock().unwrap().compiler_needed = compiler;
-    let (build_from, build_span) = if compiler { (0.72, 0.26) } else { (0.0, 0.98) };
-    if compiler {
-        fetch_compiler(paths, status, cancel)?;
+pub fn prepare(paths: &Paths, from_source: bool, status: &Shared, cancel: &AtomicBool) -> Result<(), String> {
+    let compiler = from_source && !paths.has_compiler() && !paths.is_built();
+    {
+        let mut status = status.lock().unwrap();
+        status.compiler_needed = compiler;
+        status.from_source = from_source;
+        status.stage = if compiler { Stage::Compiler } else { Stage::Building };
     }
     if !paths.is_built() {
-        build(paths, status, cancel, build_from, build_span)?;
+        if from_source {
+            let (build_from, build_span) = if compiler { (0.72, 0.26) } else { (0.0, 0.98) };
+            if compiler {
+                fetch_compiler(paths, status, cancel)?;
+            }
+            build(paths, status, cancel, build_from, build_span)?;
+        } else {
+            unpack_bundle(paths, status, cancel)?;
+        }
     }
     report(status, Stage::Starting, 0.98, "");
+    Ok(())
+}
+
+/// Puts the launcher, the mod, the patches and the SDK from inside this program where a build would leave them.
+fn unpack_bundle(paths: &Paths, status: &Shared, cancel: &AtomicBool) -> Result<(), String> {
+    let describe = |error: io::Error| format!("Couldn't write the patches: {error}");
+    let app = paths.app();
+    // In one move at the end, so that a build is either all there or not there.
+    let part = paths.home.join("app").join(format!("{SOURCE_ID}.part"));
+    let _ = fs::remove_dir_all(&app);
+    let _ = fs::remove_dir_all(&part);
+    report(status, Stage::Building, 0.3, "");
+    unpack(BUNDLE, &part).map_err(describe)?;
+    if cancel.load(Ordering::Relaxed) {
+        let _ = fs::remove_dir_all(&part);
+        return Err(CANCELLED.into());
+    }
+    fs::write(part.join("ready"), SOURCE_ID).map_err(describe)?;
+    // Antivirus can hold new files for a moment while it looks at them.
+    let mut moved = fs::rename(&part, &app);
+    for _ in 0..20 {
+        if moved.is_ok() {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(250));
+        moved = fs::rename(&part, &app);
+    }
+    moved.map_err(describe)?;
+    remove_old_builds(paths);
     Ok(())
 }
 
@@ -180,14 +220,37 @@ fn fetch_compiler(paths: &Paths, status: &Shared, cancel: &AtomicBool) -> Result
             }
         })
     };
-    let result = Command::new(&archive).arg("-y").arg(format!("-o{}", folder.display())).current_dir(&folder).creation_flags(NO_WINDOW).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let result = run_unseen(&archive, &folder);
     unpacked.store(true, Ordering::Relaxed);
     let _ = counter.join();
     let _ = fs::remove_file(&archive);
     match result {
-        Ok(exit) if exit.success() && paths.has_compiler() => Ok(()),
+        Ok(true) if paths.has_compiler() => Ok(()),
         Ok(_) => Err("The compiler didn't unpack. There may not be enough disk space.".into()),
         Err(error) => Err(format!("Couldn't unpack the compiler: {error}")),
+    }
+}
+
+/// Runs the archive that unpacks itself. It has a progress window of its own, which `NO_WINDOW` doesn't cover because that's only for
+/// consoles, and `Command` has no way to ask for it to start hidden.
+fn run_unseen(archive: &Path, folder: &Path) -> io::Result<bool> {
+    let mut line = wide(format!("\"{}\" -y \"-o{}\"", archive.display(), folder.display()));
+    let directory = wide(folder);
+    unsafe {
+        let mut start: STARTUPINFOW = std::mem::zeroed();
+        start.cb = size_of::<STARTUPINFOW>() as u32;
+        start.dwFlags = STARTF_USESHOWWINDOW;
+        start.wShowWindow = SW_HIDE as u16;
+        let mut process: PROCESS_INFORMATION = std::mem::zeroed();
+        if CreateProcessW(std::ptr::null(), line.as_mut_ptr(), std::ptr::null(), std::ptr::null(), 0, NO_WINDOW, std::ptr::null(), directory.as_ptr(), &start, &mut process) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        WaitForSingleObject(process.hProcess, INFINITE);
+        let mut exit = 1u32;
+        let read = GetExitCodeProcess(process.hProcess, &mut exit);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        Ok(read != 0 && exit == 0)
     }
 }
 
@@ -281,10 +344,10 @@ fn download(to: &Path, status: &Shared, cancel: &AtomicBool) -> Result<(), Strin
 
 pub const CANCELLED: &str = "cancelled";
 
-/// Writes the source out, in the folders the Makefile expects.
-fn unpack_source(to: &Path) -> io::Result<()> {
-    let mut source = miniz_oxide::inflate::decompress_to_vec(SOURCE).map_err(|_| io::Error::other("The source in this program is damaged."))?;
-    let mut at = source.as_mut_slice() as &[u8];
+/// Writes out what's packed inside this program, with the folders it was packed from.
+fn unpack(packed: &[u8], to: &Path) -> io::Result<()> {
+    let files = miniz_oxide::inflate::decompress_to_vec(packed).map_err(|_| io::Error::other("what's inside this program is damaged"))?;
+    let mut at = files.as_slice();
     while !at.is_empty() {
         let mut size = [0u8; 4];
         at.read_exact(&mut size)?;
@@ -350,7 +413,7 @@ fn build(paths: &Paths, status: &Shared, cancel: &AtomicBool, from: f32, span: f
     let _ = fs::remove_dir_all(&app);
     let _ = fs::remove_dir_all(&source);
     fs::create_dir_all(&app).map_err(describe)?;
-    unpack_source(&source).map_err(describe)?;
+    unpack(SOURCE, &source).map_err(describe)?;
     let log = Mutex::new(fs::File::create(paths.log()).map_err(describe)?);
     let gcc = paths.gcc();
 
@@ -444,7 +507,12 @@ fn build(paths: &Paths, status: &Shared, cancel: &AtomicBool, from: f32, span: f
 // A build a running Aside has loaded can't go, and goes after a later build instead.
 fn remove_old_builds(paths: &Paths) {
     for entry in fs::read_dir(paths.home.join("app")).into_iter().flatten().flatten() {
-        if entry.file_name() != SOURCE_ID {
+        if entry.file_name() == SOURCE_ID {
+            continue;
+        }
+        // The mod goes first. If it's in use, the rest stays too, since a running Aside still installs patches from there.
+        let in_use = entry.path().join("aside-late-mod.dll");
+        if !in_use.exists() || fs::remove_file(&in_use).is_ok() {
             let _ = fs::remove_dir_all(entry.path());
         }
     }
