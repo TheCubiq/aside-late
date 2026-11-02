@@ -4,6 +4,9 @@
 
 #include "lookup.h"
 
+// Goes up when a change here can break a patch that's already written or built. Adding something doesn't count.
+#define ASIDE_LATE_SDK 1
+
 #ifdef ASIDE_LATE_MOD
 #define SDK __declspec(dllexport)
 #else

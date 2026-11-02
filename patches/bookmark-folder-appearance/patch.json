@@ -1,5 +1,7 @@
 {
   "id": "bookmark-folder-appearance",
+  "version": "1.0.0",
+  "sdk": 1,
   "title": "Bookmark folder appearance",
   "description": "Give bookmark folders colors and icons, from a right-click menu like the tab group one.",
   "tested": ["1.0.1022.1"],

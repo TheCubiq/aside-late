@@ -1,5 +1,7 @@
 {
   "id": "window-tweaks",
+  "version": "1.0.0",
+  "sdk": 1,
   "title": "Window tweaks",
   "description": "Close the gap around a fullscreen window, collapse the top bar until it's hovered, set the inset around the page, and square its corners beside the sidebar.",
   "tested": ["1.0.1022.1"],

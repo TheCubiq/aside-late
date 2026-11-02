@@ -10,6 +10,7 @@
 #define ENABLE_SETTLE_MS 5000
 #define MAX_OPTIONS 32
 #define OPTION_SIZE 48
+#define VERSION_SIZE 32
 
 typedef const char *(*StartFunction)(const Lookup *lookup, BYTE *base);
 typedef void (*SwitchFunction)(void);
@@ -20,9 +21,11 @@ typedef struct {
 } Option;
 
 typedef struct {
-    char id[ID_SIZE], title[128], description[TEXT_SIZE], source[128], sha[64];
-    wchar_t dll[PATH_SIZE];
+    char id[ID_SIZE], title[128], description[TEXT_SIZE], source[128], sha[64], version[VERSION_SIZE], bundledVersion[VERSION_SIZE];
+    wchar_t dll[PATH_SIZE], bundledFolder[PATH_SIZE];
     BOOL needsRestart, installed;
+    BOOL bundled;       // Came with this build, whether or not something installed has taken its place.
+    BOOL needsRebuild;  // Compiled against an SDK this build doesn't have.
     BOOL wanted;     // The switch.
     BOOL running;
     BOOL started;    // Found what it needs in this build.
@@ -42,7 +45,7 @@ typedef enum { JOB_SET, JOB_INSTALL, JOB_REMOVE, JOB_OPTION, JOB_RESET_OPTIONS }
 
 typedef struct {
     JobKind kind;
-    BOOL on;
+    BOOL on, rebuild;
     char id[ID_SIZE], repo[128], sha[64], key[OPTION_SIZE], value[OPTION_SIZE];
 } Job;
 
@@ -152,6 +155,16 @@ static void ValueText(const char *value, char *out, size_t size) {
     snprintf(out, size, "%.*s", (int)(end - value), value);
 }
 
+// Below zero if a is older, part by part, so that 1.10.0 is newer than 1.9.0.
+static int CompareVersions(const char *a, const char *b) {
+    int left[3] = {0}, right[3] = {0};
+    sscanf(a, "%d.%d.%d", &left[0], &left[1], &left[2]);
+    sscanf(b, "%d.%d.%d", &right[0], &right[1], &right[2]);
+    for (int i = 0; i < 3; i++)
+        if (left[i] != right[i]) return left[i] < right[i] ? -1 : 1;
+    return 0;
+}
+
 static void OptionsPath(const char *id, wchar_t *path) {
     swprintf(path, PATH_SIZE, L"%ls\\options\\%hs.tsv", Home, id);
 }
@@ -212,13 +225,16 @@ static ModPatch *AddPatchFolder(const wchar_t *folder, BOOL installed) {
     char *manifest = ReadWholeFile(path, NULL);
     if (!manifest) return NULL;
 
-    char id[ID_SIZE], sha[64] = "", source[128] = "";
+    char id[ID_SIZE], sha[64] = "", source[128] = "", version[VERSION_SIZE] = "";
+    int builtFor = ASIDE_LATE_SDK;  // Anything installed before the SDK had a number was built for the first one.
     ManifestField(manifest, "id", id, sizeof id);
+    const char *versionValue = FindValue(manifest, "version");
+    if (versionValue) ValueText(versionValue, version, sizeof version);
     if (installed) {
         swprintf(path, PATH_SIZE, L"%ls\\installed.txt", folder);
         char *about = ReadWholeFile(path, NULL);
         if (about) {
-            sscanf(about, "%63s %127s", sha, source);
+            sscanf(about, "%63s %127s %d", sha, source, &builtFor);
             free(about);
         }
         swprintf(path, PATH_SIZE, L"%ls\\patch-%hs.dll", folder, sha);
@@ -228,8 +244,12 @@ static ModPatch *AddPatchFolder(const wchar_t *folder, BOOL installed) {
     ModPatch *patch = NULL;
     if (id[0] && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) {
         patch = FindPatch(id);
-        if (patch && !installed) patch = NULL;  // Something installed takes the place of a built-in one.
-        else if (!patch && PatchCount < MAX_PATCHES) {
+        if (patch && !installed) patch = NULL;
+        // Something installed takes the place of a built-in one, unless that's the better copy to run.
+        else if (patch && !patch->installed && (builtFor != ASIDE_LATE_SDK || (version[0] && patch->version[0] && CompareVersions(version, patch->version) < 0))) {
+            free(manifest);
+            return patch;
+        } else if (!patch && PatchCount < MAX_PATCHES) {
             patch = &Patches[PatchCount++];
             memset(patch, 0, sizeof *patch);
             strcpy(patch->id, id);
@@ -244,7 +264,15 @@ static ModPatch *AddPatchFolder(const wchar_t *folder, BOOL installed) {
         patch->installed = installed;
         strcpy(patch->sha, sha);
         strcpy(patch->source, installed ? source : "built-in");
+        strcpy(patch->version, version);
         wcscpy(patch->dll, path);
+        if (!installed) {
+            patch->bundled = TRUE;
+            strcpy(patch->bundledVersion, version);
+            wcscpy(patch->bundledFolder, folder);
+        }
+        patch->needsRebuild = builtFor != ASIDE_LATE_SDK;
+        if (patch->needsRebuild) snprintf(patch->error, sizeof patch->error, "Built for another version of Aside Late. Rebuild it to use it.");
         ReadOptions(patch, manifest);
         // Nothing has loaded yet on the first pass, so anything an update left behind can go.
         if (installed && !patch->module) CleanOldBuilds(id, sha);
@@ -292,6 +320,33 @@ static void SaveDisabled(void) {
     fclose(file);
 }
 
+// Official patches start off, on a new home and whenever a later build brings a new one. A home from before this
+// keeps what it has, including its patches being on.
+static void TurnOffNewBundled(BOOL newHome) {
+    wchar_t path[PATH_SIZE];
+    HomePathW(path, L"seen.txt");
+    char *text = ReadWholeFile(path, NULL);
+    BOOL firstTime = !text, changed = FALSE;
+    FILE *file = _wfopen(path, L"a");
+    for (int i = 0; i < PatchCount; i++) {
+        ModPatch *patch = &Patches[i];
+        if (!patch->bundled) continue;
+        BOOL seen = FALSE;
+        size_t size = strlen(patch->id);
+        for (const char *at = text; at && (at = strstr(at, patch->id)); at += size)
+            if ((at == text || at[-1] == '\n') && (at[size] == '\r' || at[size] == '\n')) seen = TRUE;
+        if (seen) continue;
+        if (!firstTime || newHome) {
+            patch->wanted = FALSE;
+            changed = TRUE;
+        }
+        if (file) fprintf(file, "%s\n", patch->id);
+    }
+    if (file) fclose(file);
+    free(text);
+    if (changed) SaveDisabled();
+}
+
 static void WriteJsonText(FILE *file, const char *text) {
     fputc('"', file);
     for (; *text; text++) {
@@ -309,7 +364,7 @@ void SavePatchList(void) {
     EnterCriticalSection(&Lock);
     FILE *file = _wfopen(path, L"w");
     if (file) {
-        fprintf(file, "{\"safeMode\":%s,\"patches\":[", SafeMode ? "true" : "false");
+        fprintf(file, "{\"safeMode\":%s,\"sdk\":%d,\"hasCompiler\":%s,\"patches\":[", SafeMode ? "true" : "false", ASIDE_LATE_SDK, HasCompiler() ? "true" : "false");
         for (int i = 0; i < PatchCount; i++) {
             const ModPatch *patch = &Patches[i];
             fprintf(file, "%s{\"id\":", i ? "," : "");
@@ -322,6 +377,11 @@ void SavePatchList(void) {
             WriteJsonText(file, patch->source);
             fputs(",\"sha\":", file);
             WriteJsonText(file, patch->sha);
+            fputs(",\"version\":", file);
+            WriteJsonText(file, patch->version);
+            fputs(",\"bundledVersion\":", file);
+            WriteJsonText(file, patch->bundledVersion);
+            fprintf(file, ",\"bundled\":%s,\"needsRebuild\":%s", patch->bundled ? "true" : "false", patch->needsRebuild ? "true" : "false");
             fputs(",\"status\":", file);
             WriteJsonText(file, patch->status);
             fputs(",\"error\":", file);
@@ -367,6 +427,10 @@ void SetPatchProgress(const char *id, const char *text) {
 
 static BOOL LoadPatchModule(ModPatch *patch) {
     if (patch->module) return TRUE;
+    if (patch->needsRebuild) {
+        snprintf(patch->error, sizeof patch->error, "Built for another version of Aside Late. Rebuild it to use it.");
+        return FALSE;
+    }
     patch->module = LoadLibraryW(patch->dll);
     if (!patch->module) {
         snprintf(patch->error, sizeof patch->error, "Couldn't load it (error %lu)", GetLastError());
@@ -516,12 +580,12 @@ static void RunInstall(const Job *job) {
         old->option = NULL;
         old->error[0] = 0;
     }
-    if (!InstallPatch(job->repo, job->id, job->sha, error, sizeof error) || (!AddInstalledPatch(job->id) && snprintf(error, sizeof error, "Its folder doesn't look right"))) {
+    if (!InstallPatch(job->repo, job->id, job->sha, job->rebuild, error, sizeof error) || (!AddInstalledPatch(job->id) && snprintf(error, sizeof error, "Its folder doesn't look right"))) {
         // An update that failed leaves the old version as it was, off until it's switched on again.
         ModPatch *patch = FindPatch(job->id);
         if (patch) {
             patch->status[0] = 0;
-            snprintf(patch->error, sizeof patch->error, "Couldn't install it: %s", error);
+            snprintf(patch->error, sizeof patch->error, "Couldn't install it: %.380s. The version you had stays off until you switch it on.", error);
         }
         SaveInstallState(job->id, "failed", error);
         SavePatchList();
@@ -544,14 +608,23 @@ static void RunRemove(const Job *job) {
     swprintf(path, PATH_SIZE, L"%ls\\patches\\%hs\\installed.txt", Home, job->id);
     DeleteFileW(path);
     CleanOldBuilds(job->id, "");
-    OptionsPath(job->id, path);
-    DeleteFileW(path);
+    // An official patch goes back to the copy that came with this build, and keeps its switch and options.
+    BOOL bundled = patch->bundled, wanted = patch->wanted;
+    wchar_t bundledFolder[PATH_SIZE];
+    wcscpy(bundledFolder, patch->bundledFolder);
+    if (!bundled) {
+        OptionsPath(job->id, path);
+        DeleteFileW(path);
+    }
     EnterCriticalSection(&Lock);
     free(patch->optionsJson);
     *patch = Patches[--PatchCount];
+    ModPatch *restored = bundled ? AddPatchFolder(bundledFolder, FALSE) : NULL;
+    if (restored) restored->wanted = wanted;
     LeaveCriticalSection(&Lock);
     SaveDisabled();
-    SavePatchList();
+    if (restored && wanted && !restored->needsRestart) TurnOn(restored);
+    else SavePatchList();
 }
 
 BOOL AddInstalledPatch(const char *id) {
@@ -634,6 +707,18 @@ void QueueInstall(const char *repo, const char *id, const char *sha) {
     snprintf(job.id, sizeof job.id, "%s", id);
     snprintf(job.repo, sizeof job.repo, "%s", repo);
     snprintf(job.sha, sizeof job.sha, "%s", sha);
+    PushJob(&job);
+}
+
+// Compiles what's already in its source folder again, against this build's SDK.
+void QueueRebuild(const char *id) {
+    ModPatch *patch = FindPatch(id);
+    if (!patch || !patch->installed) return;
+    SaveInstallState(id, "running", "Starting");
+    Job job = {.kind = JOB_INSTALL, .rebuild = TRUE};
+    snprintf(job.id, sizeof job.id, "%s", id);
+    snprintf(job.repo, sizeof job.repo, "%s", patch->source);
+    snprintf(job.sha, sizeof job.sha, "%s", patch->sha);
     PushJob(&job);
 }
 
@@ -735,9 +820,12 @@ void PatchesStart(BYTE *base) {
     ULONGLONG started = GetTickCount64();
     wchar_t folder[PATH_SIZE];
     HomePathW(folder, L"options");
+    // Every launch makes this folder, so it says whether this home has been used before.
+    BOOL newHome = GetFileAttributesW(folder) == INVALID_FILE_ATTRIBUTES;
     CreateDirectoryW(folder, NULL);
     FindPatches();
     ReadDisabled();
+    TurnOffNewBundled(newHome);
     RecoverFromCrash();
     AddVectoredExceptionHandler(1, OnException);
     WriteMarker("starting\n");

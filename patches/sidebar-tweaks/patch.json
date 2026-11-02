@@ -1,5 +1,7 @@
 {
   "id": "sidebar-tweaks",
+  "version": "1.0.0",
+  "sdk": 1,
   "title": "Sidebar tweaks",
   "description": "Keep a collapsed sidebar open while its menus are, reveal it from the window's edge, and set how quickly it opens and closes.",
   "tested": ["1.0.1022.1"],

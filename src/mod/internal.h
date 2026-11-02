@@ -39,6 +39,7 @@ void PatchesStart(BYTE *base);
 void PatchesClean(void);
 void QueueSet(const char *id, BOOL enabled);
 void QueueInstall(const char *repo, const char *id, const char *sha);
+void QueueRebuild(const char *id);
 void QueueRemove(const char *id);
 void QueueOption(const char *id, const char *key, const char *value);
 void QueueResetOptions(const char *id);
@@ -48,7 +49,8 @@ BOOL AddInstalledPatch(const char *id);
 void SetPatchProgress(const char *id, const char *text);
 
 // install.c
-BOOL InstallPatch(const char *repo, const char *id, const char *sha, char *error, size_t errorSize);
+BOOL InstallPatch(const char *repo, const char *id, const char *sha, BOOL rebuild, char *error, size_t errorSize);
+BOOL HasCompiler(void);
 void CleanOldBuilds(const char *id, const char *keepSha);
 
 // settings.c

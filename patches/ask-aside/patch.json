@@ -1,5 +1,7 @@
 {
   "id": "ask-aside",
+  "version": "1.0.0",
+  "sdk": 1,
   "title": "Hide Ask Aside",
   "description": "Hide the Ask Aside toolbar button.",
   "tested": ["1.0.1022.1"]

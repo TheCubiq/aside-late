@@ -5,6 +5,8 @@ const HOME = "/aside-late";
 const NAV = "nav.flex.flex-col.gap-3";
 const GROUP_ID = "aside-late-nav";
 const PAGE_ID = "aside-late-page";
+// Where the official patches get their updates. The page reads it like any repo someone added.
+const OFFICIAL_REPO = "TheCubiq/aside-late";
 
 const ICONS = {
   mods: "M14.7 6.3a4 4 0 0 0-5.4 5.1L4 16.7V20h3.3l5.3-5.3a4 4 0 0 0 5.1-5.4l-2.7 2.7-2.9-.7-.7-2.9z",
@@ -16,6 +18,8 @@ let hiddenContent = null;
 let activeNative = [];
 let patches = [];
 let safeMode = false;
+let sdk = 0;
+let hasCompiler = false;
 let browserVersion = "";
 let failure = "";
 let github = { api: "https://api.github.com", raw: "https://raw.githubusercontent.com" };
@@ -57,6 +61,8 @@ async function loadPatches() {
   if (sent !== changesSent) return;
   patches = list.patches;
   safeMode = list.safeMode;
+  sdk = list.sdk;
+  hasCompiler = list.hasCompiler;
 }
 
 async function loadRepos() {
@@ -98,7 +104,7 @@ async function loadCatalog() {
   if (catalogLoading) return;
   catalogLoading = true;
   render();
-  await Promise.all(repos.filter(repo => !catalog[repo]).map(loadRepo));
+  await Promise.all([...new Set([...repos, OFFICIAL_REPO])].filter(repo => !catalog[repo]).map(loadRepo));
   catalogLoading = false;
   render();
 }
@@ -458,24 +464,68 @@ function describe(patch) {
   if (patch.status && patch.status !== "Applying") return patch.status;
   if (patch.error) return patch.error;
   if (patch.needsRestart && patch.wanted !== patch.running) return patch.wanted ? "Applies the next time Aside starts." : "Goes away the next time Aside starts.";
-  return patch.installed ? `${patch.description} From ${patch.source}.` : patch.description;
+  return [patch.description, patch.version && `Version ${patch.version}.`, patch.installed && `From ${patch.source}.`].filter(Boolean).join(" ");
+}
+
+// Part by part, so that 1.10.0 is newer than 1.9.0.
+function isNewer(version, than) {
+  const parts = text => text.split(".").map(part => Number(part) || 0);
+  const [left, right] = [parts(version), parts(than)];
+  for (let i = 0; i < 3; i++) {
+    if ((left[i] ?? 0) !== (right[i] ?? 0)) return (left[i] ?? 0) > (right[i] ?? 0);
+  }
+  return false;
+}
+
+// A patch that doesn't say its version is compared by commit, so any new commit in its repo offers it.
+function updateFor(patch) {
+  const repo = patch.installed ? patch.source : OFFICIAL_REPO;
+  const entry = catalog[repo];
+  const latest = entry?.patches?.find(found => found.id === patch.id);
+  if (!latest) return null;
+  const newer = latest.version && patch.version ? isNewer(latest.version, patch.version) : patch.installed && entry.sha !== patch.sha;
+  return newer ? { repo, sha: entry.sha, latest } : null;
+}
+
+function madeForAnotherSdk(manifest) {
+  return manifest.sdk !== undefined && manifest.sdk !== sdk;
+}
+
+// What someone should know before pressing something that compiles.
+function compileNotes(manifest) {
+  return [
+    madeForAnotherSdk(manifest) && "It was made for another version of Aside Late, so it may not compile or work.",
+    !hasCompiler && "This first downloads a 69 MB compiler, about 740 MB on disk.",
+  ].filter(Boolean).join(" ");
 }
 
 function installedRow(patch) {
-  const description = describe(patch);
-  const newer = patch.installed && catalog[patch.source]?.sha;
+  const notes = [describe(patch)];
   const controls = make("div", "flex items-center gap-2", toggle(patch));
   if (optionsOf(patch).length) controls.prepend(configureButton(patch));
+  const update = patch.status ? null : updateFor(patch);
+  if (update) {
+    notes.push(update.latest.version ? `Version ${update.latest.version} is available.` : "A newer version is available.", compileNotes(update.latest));
+    controls.prepend(textButton(madeForAnotherSdk(update.latest) ? "Update anyway" : "Update", () => install(update.repo, update.sha, update.latest.folder)));
+  }
+  if (patch.needsRebuild && !patch.status) {
+    notes.push(compileNotes({}));
+    controls.prepend(textButton("Rebuild", async () => {
+      patch.status = "Starting";
+      render();
+      await ask(`rebuild/${patch.id}`);
+      followNow();
+    }));
+  }
   if (patch.installed) {
-    if (newer && newer !== patch.sha) controls.prepend(textButton("Update", () => install(patch.source, newer, patch.id)));
-    controls.prepend(textButton("Remove", async () => {
+    controls.prepend(textButton(patch.bundled ? "Use bundled version" : "Remove", async () => {
       patch.status = "Removing";
       render();
       await ask(`remove/${patch.id}`);
       followNow();
     }));
   }
-  return row(patch.title, description, controls);
+  return row(patch.title, notes.filter(Boolean).join(" "), controls);
 }
 
 function optionsOf(patch) {
@@ -899,8 +949,8 @@ function availableRows() {
       rows.push(row(repo, available.length ? null : "Nothing new here.", remove));
       for (const patch of available) {
         const busy = installing?.id === patch.id;
-        const text = busy ? installing.text : patch.description;
-        const control = busy && !installing.failed ? null : textButton("Install", () => install(repo, entry.sha, patch.folder));
+        const text = busy ? installing.text : [patch.description, compileNotes(patch)].filter(Boolean).join(" ");
+        const control = busy && !installing.failed ? null : textButton(madeForAnotherSdk(patch) ? "Install anyway" : "Install", () => install(repo, entry.sha, patch.folder));
         rows.push(row(patch.title ?? patch.id, busy && installing.failed ? `Couldn't install it: ${text}` : text, control));
       }
     }
@@ -974,7 +1024,7 @@ function render() {
 }
 
 function stateKey() {
-  return JSON.stringify([patches, safeMode, installing, failure, repos, Object.keys(catalog), catalogLoading]);
+  return JSON.stringify([patches, safeMode, hasCompiler, installing, failure, repos, Object.keys(catalog), catalogLoading]);
 }
 
 // The mods page is looked at again and again, and most of the time nothing's different.

@@ -87,7 +87,8 @@ static BOOL RunHidden(wchar_t *commandLine, const wchar_t *folder, const wchar_t
     SECURITY_ATTRIBUTES inherit = {.nLength = sizeof inherit, .bInheritHandle = TRUE};
     HANDLE log = CreateFileW(logPath, GENERIC_WRITE, FILE_SHARE_READ, &inherit, CREATE_ALWAYS, 0, NULL);
     if (log == INVALID_HANDLE_VALUE) return FALSE;
-    STARTUPINFOW si = {.cb = sizeof si, .dwFlags = STARTF_USESTDHANDLES, .hStdOutput = log, .hStdError = log};
+    // CREATE_NO_WINDOW only covers a console, and the compiler's archive unpacks itself with a window of its own.
+    STARTUPINFOW si = {.cb = sizeof si, .dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW, .wShowWindow = SW_HIDE, .hStdOutput = log, .hStdError = log};
     PROCESS_INFORMATION pi;
     BOOL started = CreateProcessW(NULL, commandLine, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, folder, &si, &pi);
     CloseHandle(log);
@@ -97,6 +98,13 @@ static BOOL RunHidden(wchar_t *commandLine, const wchar_t *folder, const wchar_t
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return TRUE;
+}
+
+BOOL HasCompiler(void) {
+    wchar_t gcc[PATH_SIZE];
+    if (GetEnvironmentVariableW(L"ASIDE_LATE_GCC", gcc, PATH_SIZE)) return TRUE;
+    HomePathW(gcc, L"compiler\\w64devkit\\bin\\gcc.exe");
+    return GetFileAttributesW(gcc) != INVALID_FILE_ATTRIBUTES;
 }
 
 // w64devkit is one archive that unpacks itself into one folder.
@@ -258,20 +266,53 @@ static BOOL AppendSources(const wchar_t *folder, wchar_t *commandLine, size_t si
     return any;
 }
 
-BOOL InstallPatch(const char *repo, const char *id, const char *sha, char *error, size_t errorSize) {
-    wchar_t patchFolder[PATH_SIZE], source[PATH_SIZE], gcc[PATH_SIZE], mod[PATH_SIZE], sdk[PATH_SIZE], dll[PATH_SIZE], logPath[PATH_SIZE];
+static BOOL CompileSource(const char *id, const wchar_t *source, const wchar_t *dll, const wchar_t *logPath, char *error, size_t errorSize);
+
+BOOL InstallPatch(const char *repo, const char *id, const char *sha, BOOL rebuild, char *error, size_t errorSize) {
+    wchar_t patchFolder[PATH_SIZE], source[PATH_SIZE], dll[PATH_SIZE], logPath[PATH_SIZE];
     wchar_t patches[PATH_SIZE];
     HomePathW(patches, L"patches");
     CreateDirectoryW(patches, NULL);
     swprintf(patchFolder, PATH_SIZE, L"%ls\\%hs", patches, id);
     CreateDirectoryW(patchFolder, NULL);
-    swprintf(source, PATH_SIZE, L"%ls\\source", patchFolder);
-    DeleteFolder(source);
-    CreateDirectoryW(source, NULL);
+    // New source stays beside what's kept until it has compiled, so that a failed update can't take away what Rebuild needs.
+    swprintf(source, PATH_SIZE, L"%ls\\source%ls", patchFolder, rebuild ? L"" : L".new");
+    if (!rebuild) {
+        DeleteFolder(source);
+        CreateDirectoryW(source, NULL);
+        SetPatchProgress(id, "Downloading");
+        if (!DownloadSource(repo, id, sha, source, error, errorSize)) return FALSE;
+    }
 
-    SetPatchProgress(id, "Downloading");
-    if (!DownloadSource(repo, id, sha, source, error, errorSize)) return FALSE;
+    swprintf(dll, PATH_SIZE, L"%ls\\patch-%hs.dll", patchFolder, sha);
+    swprintf(logPath, PATH_SIZE, L"%ls\\compile.log", patchFolder);
+    // This commit, built by this mod and still loaded from earlier, is what compiling would give. It also can't be overwritten.
+    if (DeleteFileW(dll) || GetLastError() != ERROR_ACCESS_DENIED) {
+        if (!CompileSource(id, source, dll, logPath, error, errorSize)) return FALSE;
+    }
 
+    wchar_t from[PATH_SIZE], to[PATH_SIZE];
+    swprintf(from, PATH_SIZE, L"%ls\\patch.json", source);
+    swprintf(to, PATH_SIZE, L"%ls\\patch.json", patchFolder);
+    if (!CopyFileW(from, to, FALSE)) {
+        snprintf(error, errorSize, "The patch has no patch.json");
+        return FALSE;
+    }
+    char about[256];
+    int aboutSize = snprintf(about, sizeof about, "%s %s %d\n", sha, repo, ASIDE_LATE_SDK);
+    swprintf(to, PATH_SIZE, L"%ls\\installed.txt", patchFolder);
+    WriteWholeFile(to, about, aboutSize);
+    CleanOldBuilds(id, sha);
+    if (!rebuild) {
+        swprintf(to, PATH_SIZE, L"%ls\\source", patchFolder);
+        DeleteFolder(to);
+        if (!MoveFileW(source, to)) ModLog("couldn't keep %s's source (error %lu)", id, GetLastError());
+    }
+    return TRUE;
+}
+
+static BOOL CompileSource(const char *id, const wchar_t *source, const wchar_t *dll, const wchar_t *logPath, char *error, size_t errorSize) {
+    wchar_t gcc[PATH_SIZE], mod[PATH_SIZE], sdk[PATH_SIZE];
     if (!FindCompiler(id, gcc, error, errorSize)) return FALSE;
     SetPatchProgress(id, "Compiling");
     GetModuleFileNameW(ThisModule, mod, PATH_SIZE);
@@ -279,8 +320,6 @@ BOOL InstallPatch(const char *repo, const char *id, const char *sha, char *error
     wchar_t *slash = wcsrchr(sdk, L'\\');
     if (!slash) return FALSE;
     wcscpy(slash + 1, L"sdk");
-    swprintf(dll, PATH_SIZE, L"%ls\\patch-%hs.dll", patchFolder, sha);
-    swprintf(logPath, PATH_SIZE, L"%ls\\compile.log", patchFolder);
 
     size_t size = 32768;
     wchar_t *commandLine = malloc(size * sizeof *commandLine);
@@ -317,18 +356,5 @@ BOOL InstallPatch(const char *repo, const char *id, const char *sha, char *error
         free(log);
         return FALSE;
     }
-
-    wchar_t from[PATH_SIZE], to[PATH_SIZE];
-    swprintf(from, PATH_SIZE, L"%ls\\patch.json", source);
-    swprintf(to, PATH_SIZE, L"%ls\\patch.json", patchFolder);
-    if (!CopyFileW(from, to, FALSE)) {
-        snprintf(error, errorSize, "The patch has no patch.json");
-        return FALSE;
-    }
-    char about[256];
-    int aboutSize = snprintf(about, sizeof about, "%s %s\n", sha, repo);
-    swprintf(to, PATH_SIZE, L"%ls\\installed.txt", patchFolder);
-    WriteWholeFile(to, about, aboutSize);
-    CleanOldBuilds(id, sha);
     return TRUE;
 }
