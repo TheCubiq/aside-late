@@ -1,0 +1,63 @@
+# Started by hand, from the Actions tab or with `gh workflow run release.yml`.
+# Builds the window and publishes it as a release, named after the version in src/front/Cargo.toml.
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        id: version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' src/front/Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "v$version is already released. Change the version in src/front/Cargo.toml first." >&2
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src/front/target
+          key: front-${{ runner.os }}-${{ hashFiles('src/front/Cargo.lock') }}
+
+      - name: Build
+        working-directory: src/front
+        run: cargo build --release --locked
+
+      - name: Check the C still builds
+        run: make
+
+      - name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          asset="AsideLate-$VERSION.exe"
+          cp src/front/target/release/aside-late-setup.exe "$asset"
+          sha=$(sha256sum "$asset" | cut -d' ' -f1)
+          size=$(( $(stat -c %s "$asset") / 1000000 ))
+          flag=""
+          case "$VERSION" in *-*) flag="--prerelease" ;; esac
+          {
+            cat .github/release-notes.md
+            echo
+            echo "\`$asset\` is $size MB. SHA-256: \`$sha\`"
+          } > notes.md
+          gh release create "v$VERSION" "$asset" $flag --title "Aside Late $VERSION" --notes-file notes.md --target "$GITHUB_SHA"
