@@ -258,3 +258,69 @@ BOOL LookupVisibility(const Lookup *lookup, int *setVisibleSlot, DWORD *visibleO
     *visibleOffset = kinds[best].visible;
     return TRUE;
 }
+
+const RUNTIME_FUNCTION *LookupTraced(const Lookup *lookup, const char *trace) {
+    DWORD strings[2];
+    if (LookupStrings(lookup, trace, strings, 2) != 1) return NULL;
+    size_t count;
+    const Reference *sites = LookupCode(lookup, strings[0], &count);
+    return count == 1 ? LookupFunction(lookup, sites[0].site) : NULL;
+}
+
+// SchedulePaint builds gfx::Rect(size()) on the stack and asks if the view has a custom
+// Paint: mov qword [rsp+x],0; mov rax,[rcx+size]; mov [rsp+y],rax; mov rcx,[rcx]; mov rax,[rcx+50h]
+static BOOL FindBoundsOffset(const Lookup *lookup, DWORD *boundsOffset, DWORD *schedulePaint) {
+    static const BYTE tail[] = {0x48, 0x8b, 0x09, 0x48, 0x8b, 0x41, 0x50};
+    DWORD start = lookup->text->VirtualAddress, end = start + lookup->text->Misc.VirtualSize - 32;
+    BOOL found = FALSE;
+    for (DWORD rva = start; rva < end; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (p[0] != 0x48 || p[1] != 0xc7 || p[2] != 0x44 || p[3] != 0x24 || *(const DWORD *)(p + 5)) continue;
+        if (p[9] != 0x48 || p[10] != 0x8b || p[11] != 0x81) continue;
+        if (p[16] != 0x48 || p[17] != 0x89 || p[18] != 0x44 || p[19] != 0x24 || memcmp(p + 21, tail, sizeof tail)) continue;
+        const RUNTIME_FUNCTION *fn = LookupFunction(lookup, rva);
+        if (!fn || rva - fn->BeginAddress > 64) continue;
+        if (found) return FALSE;
+        found = TRUE;
+        *boundsOffset = *(const DWORD *)(p + 12) - 8;
+        *schedulePaint = fn->BeginAddress;
+    }
+    return found;
+}
+
+// A bookmark row's Layout places its close button by hand, comparing its bounds before setting them:
+// cmp [rcx+bounds],r8d; ...; lea rdx,[rsp+x]; call SetBoundsRect
+BOOL LookupViewLayout(const Lookup *lookup, DWORD *boundsOffset, DWORD *schedulePaint, DWORD *setBounds, int *layoutSlot) {
+    DWORD row = LookupClassVtable(lookup, "VerticalBookmarkRowView");
+    if (!row || !FindBoundsOffset(lookup, boundsOffset, schedulePaint)) return FALSE;
+    BYTE compare[7] = {0x44, 0x39, 0x81};
+    memcpy(compare + 3, boundsOffset, 4);
+    const ULONGLONG *vtable = LookupRva(lookup, row);
+    for (int slot = 0; slot < 512; slot++) {
+        DWORD method = LookupPointerRva(lookup, vtable + slot);
+        if (!method) break;
+        const RUNTIME_FUNCTION *fn = LookupFunction(lookup, method);
+        if (!fn || fn->BeginAddress != method || fn->EndAddress - method > 1024) continue;
+        for (DWORD at = method; at + 7 <= fn->EndAddress; at++) {
+            if (memcmp(lookup->base + at, compare, sizeof compare)) continue;
+            for (DWORD call = at; call + 10 <= fn->EndAddress; call++) {
+                const BYTE *p = lookup->base + call;
+                if (memcmp(p, "\x48\x8d\x54\x24", 4) || p[5] != 0xe8) continue;
+                *setBounds = call + 10 + *(const INT32 *)(p + 6);
+                *layoutSlot = slot;
+                return TRUE;
+            }
+        }
+    }
+    return FALSE;
+}
+
+// cmp byte [rsi+flag],0; je <int3>
+DWORD LookupNeedsLayout(const Lookup *lookup, const RUNTIME_FUNCTION *layout) {
+    for (DWORD rva = layout->BeginAddress; rva + 13 <= layout->EndAddress; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (p[0] != 0x80 || p[1] != 0xbe || p[6] != 0 || p[7] != 0x0f || p[8] != 0x84) continue;
+        if (lookup->base[rva + 13 + *(const INT32 *)(p + 9)] == 0xcc) return *(const DWORD *)(p + 2);
+    }
+    return 0;
+}

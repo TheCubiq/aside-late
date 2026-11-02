@@ -47,3 +47,11 @@ SDK BOOL LookupViewMethodSlot(const Lookup *lookup, const char *trace, int *slot
 // How every view is shown and hidden, worked out from the many places doing
 // if (visible != x) SetVisible(x). FALSE if the build gives no clear answer.
 SDK BOOL LookupVisibility(const Lookup *lookup, int *setVisibleSlot, DWORD *visibleOffset);
+// Where a view keeps its bounds, View::SchedulePaint, View::SetBoundsRect, and View::Layout's slot. FALSE if the build gives
+// no clear answer.
+SDK BOOL LookupViewLayout(const Lookup *lookup, DWORD *boundsOffset, DWORD *schedulePaint, DWORD *setBounds, int *layoutSlot);
+// A view's Layout stops the browser unless a layout is pending. This is the flag saying so, read out of that check in one
+// view's Layout, for a patch that has to lay something out itself. 0 if it isn't there.
+SDK DWORD LookupNeedsLayout(const Lookup *lookup, const RUNTIME_FUNCTION *layout);
+// The function holding a trace that's only in one place, or NULL.
+SDK const RUNTIME_FUNCTION *LookupTraced(const Lookup *lookup, const char *trace);
