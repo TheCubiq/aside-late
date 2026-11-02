@@ -8,7 +8,16 @@ can be switched on and off, or installed, while the browser runs.
 
 ## Use
 
-Run:
+Download `AsideLate-<version>.exe` from [Releases](https://github.com/TheCubiq/aside-late/releases) and run it. It's about
+8 MB, and it holds the source of everything below. Press **Patch and start Aside**. The first time, it downloads a 69 MB
+compiler, checked against a pinned hash, and builds the patches on your machine. It asks before closing an Aside that's running,
+and only once all that's done. **Add a desktop shortcut** gives you one that does this in one step from then on.
+
+Windows may warn about the download, since it isn't signed.
+
+### From the command line
+
+After [building](#build), run:
 
 ```powershell
 .\build\aside-late.exe
@@ -52,10 +61,20 @@ make
 This works while a patched Aside is running. That Aside keeps what it has loaded, and the next
 launch uses the new build.
 
+The window is in `src/front`, in Rust with [GPUI Kit](https://gpui-kit.com):
+
+```powershell
+cd src/front
+cargo build --release
+```
+
+Its options are `--launch`, to start straight away and close when done, and `--exe <Aside.exe>`. Anything else goes to Aside.
+A release comes from running the **Release** workflow by hand, and is named after the version in `src/front/Cargo.toml`.
+
 ## Patches
 
 A patch is a folder in `patches/`, here or in any GitHub repo. Patches are always delivered
-as source: `make` compiles the ones here, and an installed one is compiled on your machine.
+as source: `make` or the window compiles the ones here, and an installed one is compiled on your machine.
 
 ```text
 patches/hide-something/
