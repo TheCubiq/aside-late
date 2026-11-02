@@ -10,7 +10,7 @@ can be switched on and off, or installed, while the browser runs.
 
 Download `AsideLate-<version>.exe` from [Releases](https://github.com/TheCubiq/aside-late/releases) and run it. It's about
 8 MB, and it holds the source of everything below. Press **Patch and start Aside**. The first time, it downloads a 69 MB
-compiler, checked against a pinned hash, and builds the patches on your machine. It asks before closing an Aside that's running,
+compiler, checked against a pinned hash and about 740 MB once unpacked, and builds the patches on your machine. It asks before closing an Aside that's running,
 and only once all that's done. **Add a desktop shortcut** gives you one that does this in one step from then on.
 
 Windows may warn about the download, since it isn't signed.

@@ -1,6 +1,6 @@
-The first alpha of the Aside Late window.
+An alpha of the Aside Late window.
 
-Download the exe and run it. Press **Patch and start Aside**. The first run downloads the compiler (about 69 MB, checked against a pinned hash), builds the patches on your machine, then asks before closing an Aside that's running.
+Download the exe and run it. Press **Patch and start Aside**. The first run downloads the compiler (69 MB, checked against a pinned hash, and about 740 MB once unpacked), builds the patches on your machine, then asks before closing an Aside that's running.
 
 Afterwards, switch patches on and off in Aside's **Settings → Patched stuff → Mods**.
 
