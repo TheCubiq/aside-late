@@ -70,6 +70,7 @@ Each patch here explains itself:
 
 - [bookmark-folder-appearance](patches/bookmark-folder-appearance/README.md)
 - [sidebar-tweaks](patches/sidebar-tweaks/README.md)
+- [window-tweaks](patches/window-tweaks/README.md)
 - [chats](patches/chats/README.md)
 - [ask-aside](patches/ask-aside/README.md)
 
@@ -120,7 +121,7 @@ Prefer classes and methods to code patterns. They're what survives a rebuild of 
 
 A patch that lists `options` in `patch.json` gets a configure button next to its switch, which
 opens a popup. Options that share a `group` go in an accordion, and `when` disables an option
-while a switch is off.
+while a switch is off, or, written as `"key=value"`, while another option has any other value.
 
 ```json
 "options": [
