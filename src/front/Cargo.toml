@@ -1,0 +1,33 @@
+[package]
+name = "aside-late-front"
+version = "0.1.0-alpha.1"
+edition = "2024"
+license-file = "../../LICENSE"
+publish = false
+
+[[bin]]
+name = "aside-late-setup"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit = "0.7"
+miniz_oxide = "0.8"
+sha2 = "0.10"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinHttp",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+miniz_oxide = "0.8"
+winresource = "0.1"
+
+# Small first. The window draws little and rarely, so it doesn't need the speed.
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
