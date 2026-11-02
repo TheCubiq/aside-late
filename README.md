@@ -9,9 +9,15 @@ can be switched on and off, or installed, while the browser runs.
 ## Use
 
 Download `AsideLate-<version>.exe` from [Releases](https://github.com/TheCubiq/aside-late/releases) and run it. It's about
-8 MB, and it holds the source of everything below. Press **Patch and start Aside**. The first time, it downloads a 69 MB
-compiler, checked against a pinned hash and about 740 MB once unpacked, and builds the patches on your machine. It asks before closing an Aside that's running,
-and only once all that's done. **Add a desktop shortcut** gives you one that does this in one step from then on.
+9 MB, and holds everything below already compiled, as well as its source. Press **Patch and start Aside**. That takes seconds and
+downloads nothing. It asks before closing an Aside that's running, and only once everything's ready. **Add a desktop shortcut**
+gives you one that does this in one step from then on.
+
+Patches start off. Turn on the ones you want in **Settings → Patched stuff → Mods**.
+
+**Build from source instead** compiles it all on your machine. That downloads a 69 MB compiler, checked against a pinned hash and
+about 740 MB once unpacked, and takes about a minute after that. The same compiler is downloaded the first time you install a
+patch from a GitHub repo, or update one, so you never need it otherwise.
 
 Windows may warn about the download, since it isn't signed.
 
@@ -68,17 +74,18 @@ cd src/front
 cargo build --release
 ```
 
+This runs `make` as well, so it needs `make` and `gcc` too, and packs what that builds into the exe.
 Its options are `--launch`, to start straight away and close when done, and `--exe <Aside.exe>`. Anything else goes to Aside.
 A release comes from running the **Release** workflow by hand, and is named after the version in `src/front/Cargo.toml`.
 
 ## Patches
 
-A patch is a folder in `patches/`, here or in any GitHub repo. Patches are always delivered
-as source: `make` or the window compiles the ones here, and an installed one is compiled on your machine.
+A patch is a folder in `patches/`, here or in any GitHub repo. The ones here come compiled inside
+the exe. One from anywhere else is delivered as source, and compiled on your machine when you install it.
 
 ```text
 patches/hide-something/
-  patch.json    id, title, description, the builds it has been run on
+  patch.json    id, title, description, version, sdk, the builds it has been run on
   patch.c       any number of .c files, in folders too
   README.md     what it does and how it works
 ```
@@ -95,6 +102,24 @@ Each patch here explains itself:
 
 Add `"restart": true` to `patch.json` if a patch can only work from startup. Settings then
 says it applies the next time Aside starts.
+
+### Versions
+
+```json
+{ "id": "hide-something", "version": "1.2.0", "sdk": 1 }
+```
+
+`version` is `x.y.z`, compared part by part. Mods offers **Update** when the version on the repo's default branch is higher than
+yours, so raise it when a change is ready, and until then nothing reaches anyone. Here, a check fails if a patch changes without
+that. A patch with no version is compared by commit instead, so any new commit in its repo offers an update.
+
+`sdk` is the `ASIDE_LATE_SDK` the patch was written for, from `aside-late.h`. That number goes up only when a change could break
+existing patches. If it differs from your Aside Late, Mods warns and offers **Install anyway** or **Update anyway**, since compiling
+catches most mismatches.
+
+Official patches update the same way, from this repo. If what you've compiled and what came with the exe differ, the higher version
+runs. **Use bundled version** goes back to the exe's copy. A patch that was compiled against another SDK turns off after you update
+Aside Late, and **Rebuild** compiles it again from the source it kept.
 
 A patch includes `aside-late.h` and exports up to three functions:
 
@@ -180,6 +205,7 @@ commit into `patches\<id>\source` in its home folder, and compile it against the
 `build\sdk` and the mod's DLL. The compiler is [w64devkit](https://github.com/skeeto/w64devkit),
 downloaded into the home folder the first time one is needed. `ASIDE_LATE_GCC` points at another.
 
+New source stays in `source.new` until it has compiled, so a failed update leaves what you had.
 An update loads the new DLL beside the old one, whose hooks are off. A loaded DLL can't safely be
 unloaded, because Aside could be running its code, so the old file goes on the next launch.
 
