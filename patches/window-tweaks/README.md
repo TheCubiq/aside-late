@@ -30,12 +30,14 @@ clipped, what holds it takes no notice of any height but the clipped one, since 
   - **Push the page down**: the bar slides down and the page is resized.
   - **Uncover it, like Zen**: the bar stays where it is with no background, and the page's top is cut away in the same way to show
     it, while it fades in. It has no layer to fade, and a layer would put it over the page. So every class of view in the bar
-    has its paint hooked to go through `saveLayerAlphaf`, and is repainted on each step.
+    has its paint hooked to go through `saveLayerAlphaf`, and is repainted on each step. The bar's own paint, the toolbar's and the
+    address bar's backgrounds, which have the page's tint, and the line the loading bar draws along the bottom are all left out.
+    The strip Aside draws down the side of the pane only starts at the page, or it would show beside the bar.
 - **The sidebar stays still** while a collapsed bar comes and goes. Its header grows to reach the bottom of the bar, which an inset
-  takes past its usual height, so after its layout the header goes back to its height with the bar hidden, and what's under it
-  and its buttons go with it.
-- **The inset** takes the whole pane in on all four sides, like Dia: the top bar, the page, the window's buttons and the pane's
-  shadow all move, and the page is a card with rounded corners. The window's frame paints the bar's background, tinted from the
+  takes past its usual height, so after its layout the header goes back to its height with the bar hidden. What's under it moves
+  with it, and only the last of that, which reaches the bottom, changes size. Its buttons are centred again.
+- **The inset** takes the whole pane in on all four sides, like Dia: the top bar, the page and the window's buttons all move, and
+  the page is a card with rounded corners. The strip Aside draws down the side of a pane that fills the window is taken away. The window's frame paints the bar's background, tinted from the
   page, at the place Aside's layout has for the bar. So while the bar moves, the frame stops, and the bar has that paint done on
   itself, clipped to it and moved to where it is. Aside sizes the toolbar to end where the buttons were, so it's cut to end where
   they are. **Move the top bar with the inset** can be off, for a bar that stays along the top of the window with the inset
@@ -53,3 +55,4 @@ clipped, what holds it takes no notice of any height but the clipped one, since 
 - Windows are told apart from the cursor by their size, so hovering the top of one also reveals the bar of another of exactly the
   same size.
 - Whether the window's buttons really can't be clicked while they're hidden hasn't been tried with a real mouse.
+- Uncovering the bar leaves out the loading bar, so a page's progress only shows on its tab.
