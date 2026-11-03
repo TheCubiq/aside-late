@@ -64,7 +64,7 @@
   };
 
   // Puts the hand and its ink into `layer`.
-  function create({ layer, ink = "#1d9bf0", size = 1.25, markup = MARKUP }) {
+  function create({ layer, ink = "#1d9bf0", size = 1.1, markup = MARKUP }) {
     const style = JSON.parse(JSON.stringify(STYLE));
     const hand = document.createElement("div");
     hand.setAttribute("aria-hidden", "true");
