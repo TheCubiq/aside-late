@@ -137,6 +137,11 @@ static void Start(void) {
     PublishStart();
     SettingsStart(base);
     PatchesStart(base);
+    TaskbarStart();
+    // Says this Aside has the mod, for as long as it runs, so a shortcut can open a window in it instead of asking to close it.
+    wchar_t mark[64];
+    swprintf(mark, 64, L"Local\\AsideLateMod-%lu", GetCurrentProcessId());
+    CreateMutexW(NULL, FALSE, mark);
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {

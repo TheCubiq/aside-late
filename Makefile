@@ -21,7 +21,7 @@ $(BUILD)/aside-late.exe: $(wildcard src/launcher/*) | $(BUILD)
 
 $(BUILD)/aside-late-mod.dll: $(wildcard src/mod/*) $(SDK_HEADERS) | $(BUILD)
 	$(call MoveAside,$@)
-	gcc $(CFLAGS) -DASIDE_LATE_MOD -Isrc/mod -shared -o $@ $(wildcard src/mod/*.c) -lwinhttp
+	gcc $(CFLAGS) -DASIDE_LATE_MOD -Isrc/mod -shared -o $@ $(wildcard src/mod/*.c) -lwinhttp -lole32
 
 # The same headers a patch installed later is compiled against.
 $(BUILD)/sdk/%.h: src/sdk/%.h | $(BUILD)/sdk

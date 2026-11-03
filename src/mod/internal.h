@@ -55,3 +55,6 @@ void CleanOldBuilds(const char *id, const char *keepSha);
 
 // settings.c
 void SettingsStart(BYTE *base);
+
+// taskbar.c
+void TaskbarStart(void);

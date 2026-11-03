@@ -4,6 +4,7 @@
 #include "launcher.h"
 
 #include <objbase.h>
+#include <propsys.h>
 #include <shlobj.h>
 
 // Everything aside-late keeps lives here. A trial can point it somewhere else.
@@ -18,27 +19,53 @@ static void PrepareHome(wchar_t *home) {
     CreateDirectoryW(web, NULL);
 }
 
-// A shortcut to this program, so starting Aside the usual way can mean starting it with the patches.
-static int MakeShortcut(const wchar_t *requested) {
-    wchar_t path[MAX_PATH], self[MAX_PATH];
-    if (requested) {
-        wcsncpy(path, requested, MAX_PATH - 1);
-        path[MAX_PATH - 1] = 0;
-    } else {
-        ExpandEnvironmentStringsW(L"%USERPROFILE%\\Desktop\\Aside (patched).lnk", path, MAX_PATH);
-    }
+// The shortcut's app ID is what the taskbar groups by, so its windows can be told to appear under its pin.
+static void SetShortcutAppId(IShellLinkW *link, const wchar_t *appId) {
+    static const IID storeId = {0x886d8eeb, 0x8cf2, 0x4446, {0x8d, 0x02, 0xcd, 0xba, 0x1d, 0xbd, 0xcf, 0x99}};
+    static const PROPERTYKEY idKey = {{0x9F4C2855, 0x9F79, 0x4B39, {0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3}}, 5};
+    IPropertyStore *store = NULL;
+    if (FAILED(link->lpVtbl->QueryInterface(link, &storeId, (void **)&store))) return;
+    PROPVARIANT value;
+    memset(&value, 0, sizeof value);
+    value.vt = VT_LPWSTR;
+    value.pwszVal = (wchar_t *)appId;
+    store->lpVtbl->SetValue(store, &idKey, &value);
+    store->lpVtbl->Commit(store);
+    store->lpVtbl->Release(store);
+}
+
+// A shortcut to this program, so starting Aside the usual way can mean starting it with the patches. The window asks for one to
+// itself instead, with --to, --arguments, --icon and --app-id.
+static int MakeShortcut(int first, int argc, wchar_t **argv) {
+    wchar_t path[MAX_PATH] = L"", self[MAX_PATH];
     GetModuleFileNameW(NULL, self, MAX_PATH);
+    const wchar_t *target = self, *arguments = NULL, *appId = NULL;
     wchar_t icon[MAX_PATH];
     ExpandEnvironmentStringsW(L"%ProgramFiles%\\Aside\\Application\\Aside.exe", icon, MAX_PATH);
+    for (int i = first; i < argc; i++) {
+        if (!wcscmp(argv[i], L"--to") && i + 1 < argc) target = argv[++i];
+        else if (!wcscmp(argv[i], L"--arguments") && i + 1 < argc) arguments = argv[++i];
+        else if (!wcscmp(argv[i], L"--icon") && i + 1 < argc) wcsncpy(icon, argv[++i], MAX_PATH - 1);
+        else if (!wcscmp(argv[i], L"--app-id") && i + 1 < argc) appId = argv[++i];
+        else wcsncpy(path, argv[i], MAX_PATH - 1);
+    }
+    if (!path[0]) {
+        // The desktop can be somewhere else, such as in OneDrive.
+        wchar_t desktop[MAX_PATH];
+        if (FAILED(SHGetFolderPathW(NULL, CSIDL_DESKTOPDIRECTORY, NULL, 0, desktop))) return printf("couldn't find the desktop\n"), 1;
+        swprintf(path, MAX_PATH, L"%ls\\Aside (patched).lnk", desktop);
+    }
 
     IShellLinkW *link = NULL;
     IPersistFile *file = NULL;
     CoInitialize(NULL);
     HRESULT result = CoCreateInstance(&CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, &IID_IShellLinkW, (void **)&link);
     if (SUCCEEDED(result)) {
-        link->lpVtbl->SetPath(link, self);
+        link->lpVtbl->SetPath(link, target);
+        if (arguments) link->lpVtbl->SetArguments(link, arguments);
         link->lpVtbl->SetIconLocation(link, icon, 0);
         link->lpVtbl->SetDescription(link, L"Aside with aside-late's patches");
+        if (appId) SetShortcutAppId(link, appId);
         result = link->lpVtbl->QueryInterface(link, &IID_IPersistFile, (void **)&file);
     }
     if (SUCCEEDED(result)) result = file->lpVtbl->Save(file, path, TRUE);
@@ -84,7 +111,7 @@ int wmain(int argc, wchar_t **argv) {
             ListPatches list = (ListPatches)(void *)ModFunction("ModListPatches");
             return list ? list(home) : (printf("couldn't load aside-late-mod.dll\n"), 1);
         } else if (!wcscmp(argv[first], L"--shortcut")) {
-            return MakeShortcut(first + 1 < argc ? argv[first + 1] : NULL);
+            return MakeShortcut(first + 1, argc, argv);
         } else if (!wcscmp(argv[first], L"--without") && first + 1 < argc) {
             wcsncat(skipped, argv[first + 1], 1022 - wcslen(skipped));
             wcscat(skipped, L",");
