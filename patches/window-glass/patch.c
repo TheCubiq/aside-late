@@ -1,5 +1,5 @@
 // Makes the browser window glassy, like Windows Terminal. Aside asks Windows for Mica, which only tints the window from the
-// wallpaper. This asks for acrylic instead, which blurs whatever is behind the window, and lays the theme's background colour
+// wallpaper. This asks for acrylic instead, which blurs whatever is behind the window, and lays black or white, with the theme,
 // over it at the opacity that's set. Turned off, Mica comes back.
 
 #include "resolve.h"
@@ -34,9 +34,9 @@ static int GlazedCount;
 static BOOL Enabled, Dark = TRUE;
 static int Opacity = 40;
 
-// The colours of Aside's own background, light and dark, as an SkColor4f.
-static const float LightTint[3] = {0xea / 255.f, 0xeb / 255.f, 0xee / 255.f};
-static const float DarkTint[3] = {0x2d / 255.f, 0x2d / 255.f, 0x2d / 255.f};
+// White over the glass in light mode, black in dark, as an SkColor4f.
+static const float LightTint[3] = {1, 1, 1};
+static const float DarkTint[3] = {0, 0, 0};
 
 // Canvases whose drawColor has been checked, or found not to be where it's expected.
 typedef struct {
