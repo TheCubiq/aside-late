@@ -18,7 +18,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 const WIDTH: f32 = 440.;
-const HEIGHT: f32 = 430.;
+const HEIGHT: f32 = 470.;
 const FADE: Duration = Duration::from_millis(180);
 const TICK: Duration = Duration::from_millis(33);
 const AUTO_CLOSE: Duration = Duration::from_millis(1200);
@@ -27,7 +27,7 @@ const AUTO_CLOSE: Duration = Duration::from_millis(1200);
 enum Screen {
     Ready { note: Option<SharedString> },
     Working,
-    Done { shortcut: Shortcut },
+    Done,
     Failed(SharedString),
     NoAside(SharedString),
 }
@@ -54,6 +54,10 @@ struct App_ {
     /// Whether the last start was the build from source, so that trying again does the same.
     from_source: bool,
     closes_when_done: bool,
+    /// From pressing Start Aside until Aside is up or the person says not now.
+    starting: bool,
+    desktop: Shortcut,
+    start_menu: Shortcut,
     focus: FocusHandle,
     _work: Option<Task<()>>,
 }
@@ -64,7 +68,7 @@ impl App_ {
         focus.focus(window, cx);
         let status = engine::new_status();
         let shown = status.lock().unwrap().clone();
-        let mut app = Self { paths: None, arguments, screen: Screen::Ready { note: None }, screen_id: 0, status, shown, cancel: Arc::new(AtomicBool::new(false)), from_source: false, closes_when_done, focus, _work: None };
+        let mut app = Self { paths: None, arguments, screen: Screen::Ready { note: None }, screen_id: 0, status, shown, cancel: Arc::new(AtomicBool::new(false)), from_source: false, closes_when_done, starting: false, desktop: Shortcut::Offered, start_menu: Shortcut::Offered, focus, _work: None };
         app.look_for_aside();
         if closes_when_done && app.paths.is_some() {
             app.begin(false, window, cx);
@@ -124,6 +128,19 @@ impl App_ {
     }
 
     fn begin(&mut self, from_source: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.begin_with(from_source, false, None, window, cx);
+    }
+
+    /// Puts the patches in again, or builds them from source in place of the ones there. A running Aside holds them, so it closes first.
+    fn begin_again(&mut self, from_source: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(paths) = self.paths.clone() else { return };
+        match engine::find_running(&paths) {
+            Some(running) => self.ask_to_close(running, "so the patches can be put in again", move |this, close, window, cx| this.begin_with(from_source, true, close, window, cx), window, cx),
+            None => self.begin_with(from_source, true, None, window, cx),
+        }
+    }
+
+    fn begin_with(&mut self, from_source: bool, again: bool, close: Option<Running>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(paths) = self.paths.clone() else { return };
         self.from_source = from_source;
         self.status = engine::new_status();
@@ -132,21 +149,47 @@ impl App_ {
         self.shown = self.status.lock().unwrap().clone();
         self.show(Screen::Working, cx);
         let (status, cancel) = (self.status.clone(), self.cancel.clone());
-        self.run(move || engine::prepare(&paths, from_source, &status, &cancel), Self::prepared, window, cx);
+        let work = move || {
+            if let Some(running) = close {
+                engine::terminate(&paths, running)?;
+            }
+            if again {
+                engine::forget_build(&paths);
+            }
+            engine::prepare(&paths, from_source, &status, &cancel)?;
+            engine::refresh_kept_copy(&paths);
+            Ok(())
+        };
+        self.run(work, Self::prepared, window, cx);
     }
 
     fn prepared(&mut self, result: Result<(), String>, window: &mut Window, cx: &mut Context<Self>) {
         if let Err(error) = result {
             return self.failed(error, cx);
         }
+        // Opened by hand, Aside waits for the person, so the shortcut and the pin aren't missed behind it.
+        if !self.closes_when_done {
+            self.starting = false;
+            return self.show(Screen::Done, cx);
+        }
+        self.start_aside(window, cx);
+    }
+
+    fn start_aside(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(paths) = self.paths.clone() else { return };
+        if self.starting {
+            return;
+        }
+        self.starting = true;
+        cx.notify();
         match engine::find_running(&paths) {
-            Some(running) => self.ask_to_close(running, window, cx),
+            Some(running) => self.ask_to_close(running, "so the patches can go in", Self::start, window, cx),
             None => self.start(None, window, cx),
         }
     }
 
     fn failed(&mut self, error: String, cx: &mut Context<Self>) {
+        self.starting = false;
         if error == engine::CANCELLED {
             self.show(Screen::Ready { note: Some("Stopped. Nothing was changed.".into()) }, cx);
         } else {
@@ -154,28 +197,37 @@ impl App_ {
         }
     }
 
-    /// Everything's ready by now, so the browser stays in use for as long as possible and the question comes last.
-    fn ask_to_close(&mut self, running: Running, window: &mut Window, cx: &mut Context<Self>) {
+    /// Asks before Aside is closed, and only goes on to `then` on a yes.
+    fn ask_to_close(&mut self, running: Running, why: &'static str, then: impl Fn(&mut Self, Option<Running>, &mut Window, &mut Context<Self>) + 'static, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity();
         let question = match running.windows {
-            0 => "Aside is running in the background. It has to close so the patches can go in.".to_string(),
-            1 => "Aside is open with 1 window. It has to close so the patches can go in.".to_string(),
-            many => format!("Aside is open with {many} windows. It has to close so the patches can go in."),
+            0 => format!("Aside is running in the background. It has to close {why}."),
+            1 => format!("Aside is open with 1 window. It has to close {why}."),
+            many => format!("Aside is open with {many} windows. It has to close {why}."),
         };
         let description = SharedString::from(format!("{question} Unsaved work in its pages may be lost. Aside will offer to restore your tabs."));
+        let then = std::rc::Rc::new(then);
         window.open_alert_dialog(cx, move |alert, _, _| {
-            let (yes, no) = (this.clone(), this.clone());
+            let (yes, no, then) = (this.clone(), this.clone(), then.clone());
             alert
                 .title("Close Aside?")
                 .description(description.clone())
                 .button_props(DialogButtonProps::default().ok_text("Close Aside").ok_variant(ButtonVariant::Danger).cancel_text("Not now").show_cancel(true))
                 .keyboard(true)
                 .on_ok(move |_, window, cx| {
-                    yes.update(cx, |this, cx| this.start(Some(running), window, cx));
+                    let then = then.clone();
+                    yes.update(cx, |this, cx| then(this, Some(running), window, cx));
                     true
                 })
                 .on_cancel(move |_, _, cx| {
-                    no.update(cx, |this, cx| this.show(Screen::Ready { note: Some("Aside was left open. Nothing was changed.".into()) }, cx));
+                    no.update(cx, |this, cx| {
+                        this.starting = false;
+                        if this.closes_when_done {
+                            this.show(Screen::Ready { note: Some("Aside was left open. Nothing was changed.".into()) }, cx);
+                        } else {
+                            cx.notify();
+                        }
+                    });
                     true
                 })
         });
@@ -184,13 +236,13 @@ impl App_ {
     fn start(&mut self, close: Option<Running>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(paths) = self.paths.clone() else { return };
         let status = self.status.clone();
-        let from_shortcut = self.closes_when_done;
         let work = move || {
             status.lock().unwrap().stage = Stage::Starting;
             if let Some(running) = close {
                 engine::terminate(&paths, running)?;
             }
-            engine::start(&paths, from_shortcut)
+            // Either way it's started from here, its windows can be pinned as the patched one.
+            engine::start(&paths, true)
         };
         self.run(work, Self::started, window, cx);
     }
@@ -199,29 +251,56 @@ impl App_ {
         if let Err(error) = result {
             return self.failed(error, cx);
         }
-        self.show(Screen::Done { shortcut: Shortcut::Offered }, cx);
-        if self.closes_when_done {
-            let timer = cx.background_executor().clone();
-            self._work = Some(cx.spawn_in(window, async move |_, cx| {
-                timer.timer(AUTO_CLOSE).await;
-                let _ = cx.update(|_, cx| cx.quit());
-            }));
+        if !self.closes_when_done {
+            return cx.quit();
         }
+        self.show(Screen::Done, cx);
+        let timer = cx.background_executor().clone();
+        self._work = Some(cx.spawn_in(window, async move |_, cx| {
+            timer.timer(AUTO_CLOSE).await;
+            let _ = cx.update(|_, cx| cx.quit());
+        }));
     }
 
-    fn add_shortcut(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn add_shortcut(&mut self, place: engine::Place, window: &mut Window, cx: &mut Context<Self>) {
         let Some(paths) = self.paths.clone() else { return };
-        self.screen = Screen::Done { shortcut: Shortcut::Making };
+        *self.shortcut(place) = Shortcut::Making;
         cx.notify();
         self.run(
-            move || engine::make_shortcut(&paths),
-            |this, result, _, cx| {
-                this.screen = Screen::Done { shortcut: if result.is_ok() { Shortcut::Made } else { Shortcut::Failed } };
+            move || engine::make_shortcut(&paths, place),
+            move |this, result, _, cx| {
+                *this.shortcut(place) = if result.is_ok() { Shortcut::Made } else { Shortcut::Failed };
                 cx.notify();
             },
             window,
             cx,
         );
+    }
+
+    fn shortcut(&mut self, place: engine::Place) -> &mut Shortcut {
+        match place {
+            engine::Place::Desktop => &mut self.desktop,
+            engine::Place::StartMenu => &mut self.start_menu,
+        }
+    }
+
+    /// What can be done once the patches are in: start Aside, and put it where it's easy to find.
+    fn actions(&self, cx: &mut Context<Self>) -> Div {
+        let busy = self.starting || self.desktop == Shortcut::Making || self.start_menu == Shortcut::Making;
+        let place = |id: &'static str, place: engine::Place, state: Shortcut, offer: &'static str, made: &'static str| {
+            let label = match state {
+                Shortcut::Offered => offer,
+                Shortcut::Making => "Adding…",
+                Shortcut::Made => made,
+                Shortcut::Failed => "Couldn't add it. Try again",
+            };
+            Button::new(id).outline().flex_1().label(label).disabled(busy || state == Shortcut::Made).on_click(cx.listener(move |this, _, window, cx| this.add_shortcut(place, window, cx)))
+        };
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(Button::new("start").primary().large().w_full().label(if self.starting { "Starting…" } else { "Start Aside" }).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.start_aside(window, cx))))
+            .child(h_flex().w_full().gap_2().child(place("desktop", engine::Place::Desktop, self.desktop, "Add to desktop", "On the desktop")).child(place("start-menu", engine::Place::StartMenu, self.start_menu, "Add to Start menu", "In the Start menu")))
     }
 
     /// Enter does what the big button does, unless the focus is on another button.
@@ -230,16 +309,23 @@ impl App_ {
             return;
         }
         match (event.keystroke.key.as_str(), &self.screen) {
+            ("enter", Screen::Ready { .. }) if self.offers_start() => self.start_aside(window, cx),
             ("enter", Screen::Ready { .. }) => self.begin(false, window, cx),
             ("enter", Screen::Failed(_)) => self.begin(self.from_source, window, cx),
             ("enter", Screen::NoAside(_)) => {
                 self.look_for_aside();
                 cx.notify();
             }
-            ("enter", Screen::Done { .. }) => cx.quit(),
+            ("enter", Screen::Done) if !self.closes_when_done => self.start_aside(window, cx),
+            ("enter", Screen::Done) => cx.quit(),
             ("escape", Screen::Working) => self.cancel.store(true, Ordering::Relaxed),
             _ => {}
         }
+    }
+
+    /// Patched before, and opened by hand rather than by a shortcut.
+    fn offers_start(&self) -> bool {
+        !self.closes_when_done && self.paths.as_ref().is_some_and(|paths| paths.is_built())
     }
 
     fn mark(&self, cx: &Context<Self>) -> Div {
@@ -280,7 +366,7 @@ impl App_ {
                 v_flex()
                     .w_full()
                     .gap_3()
-                    .child(Button::new("start").primary().large().w_full().label("Patch and start Aside").on_click(cx.listener(|this, _, window, cx| this.begin(false, window, cx))))
+                    .child(Button::new("start").primary().large().w_full().label("Patch Aside").on_click(cx.listener(|this, _, window, cx| this.begin(false, window, cx))))
                     .child(div().text_xs().text_center().text_color(cx.theme().muted_foreground).child(about))
                     .when(!built, |buttons| {
                         buttons.child(
@@ -336,7 +422,7 @@ impl App_ {
                             .gap_0p5()
                             .when(compiler, |steps| steps.child(self.step("Downloading the compiler", detail(), Stage::Compiler, cx)).child(self.step("Unpacking the compiler", detail(), Stage::Unpacking, cx)))
                             .child(self.step(if self.shown.from_source { "Building the patches" } else { "Unpacking the patches" }, detail(), Stage::Building, cx))
-                            .child(self.step("Starting Aside", None, Stage::Starting, cx)),
+                            .when(self.closes_when_done, |steps| steps.child(self.step("Starting Aside", None, Stage::Starting, cx))),
                     ),
             )
             .child(
@@ -347,13 +433,7 @@ impl App_ {
             )
     }
 
-    fn done(&self, shortcut: Shortcut, cx: &mut Context<Self>) -> Div {
-        let label = match shortcut {
-            Shortcut::Offered => "Add a desktop shortcut",
-            Shortcut::Making => "Adding…",
-            Shortcut::Made => "Shortcut added",
-            Shortcut::Failed => "Couldn't add it. Try again",
-        };
+    fn done(&self, cx: &mut Context<Self>) -> Div {
         let reduce_motion = cx.reduce_motion();
         let tick = div().size(px(52.)).rounded_full().flex().items_center().justify_center().bg(cx.theme().success).text_color(cx.theme().success_foreground).child(Icon::new(IconName::Check).size(px(26.)));
         let tick = if reduce_motion {
@@ -365,13 +445,36 @@ impl App_ {
             .size_full()
             .items_center()
             .justify_between()
-            .child(v_flex().items_center().gap_4().child(div().size(px(52.)).flex().items_center().justify_center().child(tick)).child(self.heading("Aside is ready", "Turn on the patches you want in Aside's Settings, under Patched stuff, then Mods.", cx)))
+            .child(v_flex().items_center().gap_4().child(div().size(px(52.)).flex().items_center().justify_center().child(tick)).child(if self.closes_when_done {
+                self.heading("Aside is ready", "Turn on the patches you want in Aside's Settings, under Patched stuff, then Mods.", cx)
+            } else {
+                self.heading("Patches are ready", "Start Aside to use them, then turn on the ones you want in its Settings, under Patched stuff, then Mods.", cx)
+            }))
+            .child(if self.closes_when_done { Button::new("done").primary().large().w_full().label("Done").on_click(|_, _, cx| cx.quit()).into_any_element() } else { self.actions(cx).into_any_element() })
+    }
+
+    /// Opened again after patching: the same choices as when it finished, and a way to put the patches in again.
+    fn already_patched(&self, note: &Option<SharedString>, cx: &mut Context<Self>) -> Div {
+        let about: SharedString = note.clone().unwrap_or_else(|| "The patches are in place. Aside gets them each time it starts from here.".into());
+        let busy = self.starting || self.desktop == Shortcut::Making || self.start_menu == Shortcut::Making;
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_between()
+            .child(v_flex().items_center().gap_4().child(self.mark(cx)).child(self.heading("Aside is already patched", about, cx)))
             .child(
                 v_flex()
                     .w_full()
-                    .gap_2()
-                    .child(Button::new("done").primary().large().w_full().label("Done").on_click(|_, _, cx| cx.quit()))
-                    .child(Button::new("shortcut").ghost().w_full().label(label).disabled(matches!(shortcut, Shortcut::Making | Shortcut::Made)).on_click(cx.listener(|this, _, window, cx| this.add_shortcut(window, cx)))),
+                    .gap_3()
+                    .child(self.actions(cx))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_center()
+                            .gap_1()
+                            .child(Button::new("again").ghost().small().label("Patch again").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.begin_again(false, window, cx))))
+                            .child(Button::new("again-source").ghost().small().label("Build from source").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.begin_again(true, window, cx)))),
+                    ),
             )
     }
 
@@ -422,9 +525,10 @@ impl Render for App_ {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let screen = self.screen.clone();
         let content = match &screen {
+            Screen::Ready { note } if self.offers_start() => self.already_patched(note, cx),
             Screen::Ready { note } => self.ready(note, cx),
             Screen::Working => self.working(cx),
-            Screen::Done { shortcut } => self.done(*shortcut, cx),
+            Screen::Done => self.done(cx),
             Screen::Failed(error) => self.failed_screen(error, cx),
             Screen::NoAside(error) => self.no_aside(error, cx),
         };

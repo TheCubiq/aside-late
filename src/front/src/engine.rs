@@ -608,6 +608,10 @@ pub fn terminate(paths: &Paths, running: Running) -> Result<(), String> {
 pub fn start(paths: &Paths, from_shortcut: bool) -> Result<(), String> {
     let mut launcher = Command::new(paths.app().join("aside-late.exe"));
     if from_shortcut {
+        // A window pinned from the taskbar starts this copy again.
+        if keep_a_copy(paths).is_err() && !paths.home.join("Aside Late.exe").exists() {
+            return Err("Couldn't keep a copy of Aside Late for the taskbar.".into());
+        }
         launcher.env("ASIDE_LATE_APP_ID", APP_ID);
     }
     let output = launcher.arg("--exe").arg(&paths.exe).args(&paths.passed_on).env("ASIDE_LATE_HOME", &paths.home).creation_flags(NO_WINDOW).stdin(Stdio::null()).output().map_err(|error| format!("Couldn't start the launcher: {error}"))?;
@@ -619,15 +623,47 @@ pub fn start(paths: &Paths, from_shortcut: bool) -> Result<(), String> {
     Err(if said.is_empty() { "Aside didn't start.".into() } else { said.lines().last().unwrap_or(said).to_string() })
 }
 
-/// A desktop shortcut that starts Aside patched, through a copy of this program that won't go missing from Downloads.
-pub fn make_shortcut(paths: &Paths) -> Result<(), String> {
-    let describe = |error: io::Error| format!("Couldn't make the shortcut: {error}");
-    let current = std::env::current_exe().map_err(describe)?;
-    let kept = paths.home.join("Aside Late.exe");
-    if current != kept {
-        fs::create_dir_all(&paths.home).map_err(describe)?;
-        fs::copy(&current, &kept).map_err(describe)?;
+/// Shortcuts and pins start the kept copy, so a newer version replaces it as soon as it has patched. Otherwise the next shortcut
+/// would put the older patches back.
+pub fn refresh_kept_copy(paths: &Paths) {
+    if paths.home.join("Aside Late.exe").exists() {
+        let _ = keep_a_copy(paths);
     }
-    let done = Command::new(paths.app().join("aside-late.exe")).arg("--shortcut").arg("--to").arg(&kept).args(["--arguments", "--launch", "--app-id", APP_ID]).arg("--icon").arg(&paths.exe).env("ASIDE_LATE_HOME", &paths.home).creation_flags(NO_WINDOW).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(describe)?;
+}
+
+fn keep_a_copy(paths: &Paths) -> io::Result<PathBuf> {
+    let current = std::env::current_exe()?;
+    let kept = paths.home.join("Aside Late.exe");
+    if !current.as_os_str().eq_ignore_ascii_case(kept.as_os_str()) {
+        fs::create_dir_all(&paths.home)?;
+        fs::copy(&current, &kept)?;
+    }
+    Ok(kept)
+}
+
+#[derive(Clone, Copy)]
+pub enum Place {
+    Desktop,
+    /// Listed with the other programs, not pinned.
+    StartMenu,
+}
+
+/// The next start unpacks or builds the patches again, in place of these.
+pub fn forget_build(paths: &Paths) {
+    let _ = fs::remove_file(paths.app().join("ready"));
+}
+
+/// A shortcut that starts Aside patched, through a copy of this program that won't go missing from Downloads.
+pub fn make_shortcut(paths: &Paths, place: Place) -> Result<(), String> {
+    let describe = |error: io::Error| format!("Couldn't make the shortcut: {error}");
+    let kept = keep_a_copy(paths).map_err(describe)?;
+    let mut launcher = Command::new(paths.app().join("aside-late.exe"));
+    launcher.arg("--shortcut");
+    if let Place::StartMenu = place {
+        let programs = env_path("APPDATA").ok_or("Windows didn't say where the Start menu is.")?.join("Microsoft").join("Windows").join("Start Menu").join("Programs");
+        fs::create_dir_all(&programs).map_err(describe)?;
+        launcher.arg(programs.join("Aside (patched).lnk"));
+    }
+    let done = launcher.arg("--to").arg(&kept).args(["--arguments", "--launch", "--app-id", APP_ID]).arg("--icon").arg(&paths.exe).env("ASIDE_LATE_HOME", &paths.home).creation_flags(NO_WINDOW).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(describe)?;
     if done.success() { Ok(()) } else { Err("Windows wouldn't make the shortcut.".into()) }
 }
