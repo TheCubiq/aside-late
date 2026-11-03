@@ -6,6 +6,7 @@ Patches start off. Turn on the ones you want in Aside's **Settings → Patched s
 
 New in this alpha:
 
+- Fixed: logged out of X, the hand didn't find the Follow button. It does now, and X's cookie and log-in bars stay out of its way while it points, then come back.
 - **Add to desktop** and **Add to Start menu** make a shortcut that starts Aside patched, with no window of its own. Aside started that way shows on the taskbar as **Aside (patched)**, so a pin there starts it patched too.
 - Opened again once Aside is patched, the window offers **Patch again** and **Build from source** as well.
 - New patch, **Window glass**: the window turns frosted glass, blurring what's behind it, with a **Background opacity** slider like Windows Terminal's.
