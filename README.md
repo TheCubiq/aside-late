@@ -26,7 +26,8 @@ close a running Aside first, after asking.
 Patches start off. Turn on the ones you want in **Settings → Patched stuff → Mods**.
 
 The first start with the patches also opens a thank-you tab, once. It never comes back, and **nah, maybe later** or Esc closes
-it. Its hand follows a click on **Star** or **Follow** to GitHub or X and points at the real button there for a few seconds. Delete `said-hello.txt` in `%LOCALAPPDATA%\AsideLate` to see it again.
+it. Its hand follows a click on **Star** or **Follow** to GitHub or X and points at the real button there for a few seconds, and
+once both are clicked it waves goodbye. Delete `said-hello.txt` in `%LOCALAPPDATA%\AsideLate` to see it again.
 
 **Build from source instead** compiles it all on your machine. That downloads a 69 MB compiler, checked against a pinned hash and
 about 740 MB once unpacked, and takes about a minute after that. The same compiler is downloaded the first time you install a
