@@ -124,17 +124,29 @@
   <div class="hand" id="hand" aria-hidden="true">
     <!-- Points straight up, with the fingertip at (64, 6). The page turns it. -->
     <svg width="128" height="1400" viewBox="-64 -6 128 1400">
-      <g stroke="#111" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
-        <rect x="11" y="138" width="24" height="1300" rx="6" fill="#1b1b1d"/>
-        <rect x="-10" y="114" width="66" height="34" rx="12" fill="#fff"/>
-        <path d="M-6 126h58" fill="none"/>
-        <rect x="6" y="38" width="26" height="36" rx="13" fill="#fff"/>
-        <rect x="24" y="45" width="24" height="36" rx="12" fill="#fff"/>
-        <rect x="40" y="54" width="20" height="34" rx="10" fill="#fff"/>
-        <rect x="-18" y="56" width="80" height="66" rx="26" fill="#fff"/>
-        <rect x="-12" y="0" width="24" height="76" rx="12" fill="#fff"/>
-        <ellipse cx="-14" cy="92" rx="20" ry="12" transform="rotate(-48 -14 92)" fill="#fff"/>
-        <path d="M18 86q3 10 0 20M31 86q3 10 0 20M44 88q3 9 0 18" fill="none" stroke-width="3.5"/>
+      <defs>
+        <radialGradient id="glove" cx="0.38" cy="0.3" r="0.9">
+          <stop offset="0" stop-color="#ffffff"/>
+          <stop offset="0.55" stop-color="#f6f6f8"/>
+          <stop offset="1" stop-color="#d6d6de"/>
+        </radialGradient>
+        <linearGradient id="stick" x1="0" x2="1">
+          <stop offset="0" stop-color="#3a3a3e"/>
+          <stop offset="0.45" stop-color="#1c1c1f"/>
+          <stop offset="1" stop-color="#0d0d0f"/>
+        </linearGradient>
+      </defs>
+      <g stroke="#1d1d21" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+        <rect x="13" y="132" width="20" height="1300" rx="10" fill="url(#stick)" stroke="none"/>
+        <path d="M-3 118 C-6 130 -9 140 -8 147 C-6 156 52 158 56 149 C58 142 54 130 51 118 Z" fill="url(#glove)"/>
+        <path d="M-6 133 C10 137 37 137 53 133" fill="none" stroke-width="2.5"/>
+        <path d="M0 -1 C7 -1 12 4 13 13 C14 24 14 34 13 44 C16 36 26 37 30 45 C36 39 46 43 48 51
+                 C56 49 62 57 60 67 C64 77 65 89 62 101 C58 117 42 125 22 125 C4 125 -13 120 -19 110 C-26 100 -28 86 -24 78
+                 C-21 71 -14 69 -13 60 C-13 44 -13 26 -12 13 C-12 4 -7 -1 0 -1 Z" fill="url(#glove)"/>
+        <path d="M13.5 47 C14 51 14 54 12 58" fill="none" stroke-width="2.5"/>
+        <path d="M30 45 C32 53 32 59 30 63 M48 51 C50 59 48 65 46 69" fill="none" stroke-width="2.5"/>
+        <path d="M-6 6 C-3 3 3 3 6 6" fill="none" stroke="#c8c8d0" stroke-width="2"/>
+        <path d="M17 80 L20 103 M30 78 L33 101 M43 76 L46 99" fill="none" stroke="#111" stroke-width="5.5"/>
       </g>
     </svg>
   </div>
