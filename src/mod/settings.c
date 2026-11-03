@@ -8,8 +8,8 @@
 #define MAX_RECENT 32
 
 __asm__(".section .rdata,\"dr\"\n.Lscript:\n.incbin \"src/mod/settings.js\"\n.Lscript_end:\n.text");
-// The thank-you page the launcher opens once, at /aside-late/hello.html.
-__asm__(".section .rdata,\"dr\"\n.Lhello_page:\n.incbin \"src/mod/hello.html\"\n.Lhello_page_end:\n.Lhello_script:\n.incbin \"src/mod/hello.js\"\n.Lhello_script_end:\n.text");
+// The thank-you page the launcher opens once, at /aside-late/hello.html, and the hand it sends to GitHub and X.
+__asm__(".section .rdata,\"dr\"\n.Lhello_page:\n.incbin \"src/mod/hello.html\"\n.Lhello_page_end:\n.Lhello_script:\n.incbin \"src/mod/hello.js\"\n.Lhello_script_end:\n.Lhand_script:\n.incbin \"src/mod/hand.js\"\n.Lhand_script_end:\n.text");
 
 static const wchar_t Extension[] = L"\\AsideAgentManager\\";
 static const wchar_t Folder[] = L"\\aside-late\\";
@@ -291,6 +291,11 @@ void SettingsStart(BYTE *base) {
     WriteWhole(path, page, page_end - page);
     HomePath(path, L"web\\hello.js");
     WriteWhole(path, hello, hello_end - hello);
+    const char *hand, *hand_end;
+    __asm__("leaq .Lhand_script(%%rip), %0" : "=r"(hand));
+    __asm__("leaq .Lhand_script_end(%%rip), %0" : "=r"(hand_end));
+    HomePath(path, L"web\\hand.js");
+    WriteWhole(path, hand, hand_end - hand);
     SaveBrowserVersion(base);
     SaveGithubAddresses();
     if (!wrote) {
