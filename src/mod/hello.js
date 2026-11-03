@@ -66,15 +66,16 @@ async function show() {
 }
 
 // Runs inside the GitHub or X tab, after hand.js, so it can only use what's there. Finds the button, points at it a few times,
-// and leaves early once it's clicked.
-function pointInTab(kind) {
+// and leaves early once it's clicked. On X only the Follow for `handle` counts, since the page is full of other people's, and on
+// that account's own profile there's none, so the hand doesn't come at all.
+function pointInTab(kind, handle) {
   if (globalThis.asideLatePointing) return;
   globalThis.asideLatePointing = true;
   const SELECTORS = {
     star: ['[data-testid="star-button"]', '[data-testid="unstar-button"]', '[aria-label^="Star this repository"]', '[aria-label^="Unstar this repository"]'],
-    follow: ['[data-testid$="-follow"]', '[data-testid$="-unfollow"]'],
+    follow: [`[data-testid$="-follow"][aria-label$="@${handle}" i]`, `[data-testid$="-unfollow"][aria-label$="@${handle}" i]`],
   };
-  const LABELS = { star: /^(Star|Starred)\b/, follow: /^(Follow|Following)$/ };
+  const LABELS = { star: /^(Star|Starred)\b/ };
   const onScreen = element => {
     const box = element.getBoundingClientRect();
     return box.width > 0 && box.height > 0 && box.bottom > 0 && box.top < innerHeight && box.left < innerWidth;
@@ -84,6 +85,7 @@ function pointInTab(kind) {
       const found = [...document.querySelectorAll(selector)].find(onScreen);
       if (found) return found;
     }
+    if (!LABELS[kind]) return null;
     return [...document.querySelectorAll("a, button, [role=button]")].find(element => onScreen(element) && LABELS[kind].test(element.textContent.trim()));
   };
 
@@ -152,7 +154,7 @@ async function openAndPoint(link, kind) {
       if (id !== tab.id || change.status !== "complete") return;
       chrome.tabs.onUpdated.removeListener(loaded);
       chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["aside-late/hand.js"] })
-        .then(() => chrome.scripting.executeScript({ target: { tabId: tab.id }, func: pointInTab, args: [kind] }))
+        .then(() => chrome.scripting.executeScript({ target: { tabId: tab.id }, func: pointInTab, args: [kind, new URL(link.href).pathname.split("/")[1]] }))
         .catch(() => {});
     };
     chrome.tabs.onUpdated.addListener(loaded);
