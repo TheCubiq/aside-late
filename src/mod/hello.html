@@ -7,7 +7,7 @@
 <style>
   :root {
     color-scheme: dark;
-    --page: #0b0b0d;
+    --page: #2c2c33;
     --card: #17171a;
     --line: rgb(255 255 255 / 0.08);
     --text: #f4f4f5;
@@ -20,7 +20,7 @@
   @media (prefers-color-scheme: light) {
     :root {
       color-scheme: light;
-      --page: #e9e9ec;
+      --page: #eaebee;
       --card: #ffffff;
       --line: rgb(0 0 0 / 0.08);
       --text: #18181b;
@@ -37,8 +37,8 @@
     display: grid;
     place-items: center;
     padding: 16px;
-    /* The plain colour underneath matters: without one, Aside shows nothing of the page at all. */
-    background: radial-gradient(120% 90% at 50% 40%, color-mix(in srgb, var(--page) 94%, var(--ink) 6%), var(--page)) var(--page);
+    /* Solid, and the same as Aside's own background. A page that isn't fully opaque, even for a moment, can stay blank in Aside. */
+    background: var(--page);
     color: var(--text);
     font: 15px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
