@@ -279,6 +279,7 @@ version = "0.1.0-alpha.2"
 dependencies = [
  "gpui-kit",
  "miniz_oxide 0.8.9",
+ "raw-window-handle",
  "sha2 0.10.9",
  "windows-sys 0.61.2",
  "winresource",

@@ -22,6 +22,8 @@ const HEIGHT: f32 = 470.;
 const FADE: Duration = Duration::from_millis(180);
 const TICK: Duration = Duration::from_millis(33);
 const AUTO_CLOSE: Duration = Duration::from_millis(1200);
+/// How much black or white lies over the blur behind the window.
+const GLASS: f32 = 0.5;
 
 #[derive(Clone, PartialEq)]
 enum Screen {
@@ -207,9 +209,10 @@ impl App_ {
         };
         let description = SharedString::from(format!("{question} Unsaved work in its pages may be lost. Aside will offer to restore your tabs."));
         let then = std::rc::Rc::new(then);
-        window.open_alert_dialog(cx, move |alert, _, _| {
+        window.open_alert_dialog(cx, move |alert, _, cx| {
             let (yes, no, then) = (this.clone(), this.clone(), then.clone());
             alert
+                .bg(cx.theme().background)
                 .title("Close Aside?")
                 .description(description.clone())
                 .button_props(DialogButtonProps::default().ok_text("Close Aside").ok_variant(ButtonVariant::Danger).cancel_text("Not now").show_cancel(true))
@@ -542,9 +545,27 @@ impl Render for App_ {
             .size_full()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
-            .bg(cx.theme().background)
+            .bg(if cx.theme().is_dark() { black() } else { white() }.opacity(GLASS))
             .text_color(cx.theme().foreground)
             .child(div().size_full().p_8().child(content))
+    }
+}
+
+/// Asks Windows for acrylic behind the window, as the window-glass patch does for Aside. What's behind it shows through
+/// blurred, under the black or white the window paints at `GLASS`.
+fn frost(window: &Window) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::Graphics::Dwm::{DWMSBT_TRANSIENTWINDOW, DWMWA_SYSTEMBACKDROP_TYPE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute};
+    use windows_sys::Win32::UI::Controls::MARGINS;
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else { return };
+    let hwnd = handle.hwnd.get() as _;
+    // The backdrop only shows where the frame reaches, so it reaches over the whole window.
+    let whole = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
+    let backdrop = DWMSBT_TRANSIENTWINDOW;
+    unsafe {
+        DwmExtendFrameIntoClientArea(hwnd, &whole);
+        DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE as _, &backdrop as *const _ as _, size_of_val(&backdrop) as u32);
     }
 }
 
@@ -570,14 +591,21 @@ fn main() {
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
         gpui_kit::init(cx);
         Theme::sync_system_appearance(None, cx);
+        // The window is glass, so what's under everything is see through. A dialog keeps the solid background.
+        Theme::global_mut(cx).tokens.background = transparent_black().into();
         let bounds = Bounds::centered(None, size(px(WIDTH), px(HEIGHT)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions { title: Some("Aside Late".into()), appears_transparent: false, traffic_light_position: None }),
             is_resizable: false,
+            window_background: WindowBackgroundAppearance::MicaBackdrop,
             ..Default::default()
         };
-        gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| App_::new(arguments, launch, window, cx))).expect("the window opens");
+        gpui_kit::open_window(options, cx, |window, cx| {
+            frost(window);
+            cx.new(|cx| App_::new(arguments, launch, window, cx))
+        })
+        .expect("the window opens");
         cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.activate(true);
     });
