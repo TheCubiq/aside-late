@@ -95,18 +95,22 @@ function pointInTab(kind) {
     }
     let clicked = false;
     addEventListener("click", event => {
-      if (target.contains(event.target)) {
+      if (live().contains(event.target)) {
         clicked = true;
         hand.interrupt();
       }
     }, true);
     hand.start();
+    // Sites redraw themselves and swap the button for a new copy, so it's looked up again before every move.
+    const live = () => {
+      if (!target.isConnected || !onScreen(target)) target = find() || target;
+      return target;
+    };
     let mine = hand.generation;
     try {
       for (let round = 0; round < 3; round++) {
-        target = find() || target;
-        await hand.circle(target, mine);
-        await hand.moveTo(hand.center(target), mine, 380);
+        await hand.circle(live(), mine);
+        await hand.moveTo(hand.center(live()), mine, 380);
         await hand.tapTap(mine);
         await hand.sleep(700, mine);
         hand.fadeInk();

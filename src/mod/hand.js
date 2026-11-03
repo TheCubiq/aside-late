@@ -69,6 +69,8 @@
     layer.append(paper, hand);
 
     const at = { x: innerWidth + 160, y: innerHeight + 160 };
+    // Off screen until it starts moving. Otherwise it waits in the top left corner, wherever the page puts a new element.
+    hand.style.transform = `translate(${at.x}px, ${at.y}px) rotate(${lean}deg) scale(${size})`;
     const speed = { x: 0, y: 0 };
     let goal = { ...at };
     let tap = 0, shake = 0, stiffness = 140, last = 0, running = false, generation = 0;
@@ -108,13 +110,15 @@
         return new Promise((resolve, reject) => setTimeout(() => (mine === generation ? resolve() : reject(new Interrupted())), ms));
       },
       // Where to put the fingertip on a button: a little left of centre and below, so the finger doesn't hide the label.
+      // A button that's gone from the page, or not laid out, has no box, and would send the hand to the top left corner.
       center(element) {
         const box = element.getBoundingClientRect();
+        if (!box.width || !box.height) return null;
         return { x: box.left + box.width * 0.42, y: box.top + box.height * 0.62 };
       },
       async moveTo(point, mine, ms = 650) {
         stiffness = 140;
-        goal = { ...point };
+        if (point) goal = { ...point };
         await api.sleep(ms, mine);
       },
       async leave(mine) {
@@ -142,7 +146,9 @@
       },
       // Draws the loop with the fingertip as it goes, so the ink comes out of the finger.
       async circle(element, mine) {
-        const points = loopAround(element.getBoundingClientRect(), Math.random());
+        const box = element.getBoundingClientRect();
+        if (!box.width || !box.height) return;
+        const points = loopAround(box, Math.random());
         scribble.setAttribute("d", points.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(""));
         const length = scribble.getTotalLength();
         scribble.style.transition = "none";
