@@ -60,11 +60,11 @@
     tap: { rays: 5, spread: 36, size: 1, width: 3.5, ms: 320 },
     // It never holds still: a lazy wander in pixels, how lively that is, and degrees the stick sways from the held end. Drawing a loop calms
     // it, so the ink still comes out of the fingertip.
-    idle: { wander: 5, pace: 1, rock: 0.6 },
+    idle: { wander: 5, pace: 1.8, rock: 0.6 },
   };
 
   // Puts the hand and its ink into `layer`.
-  function create({ layer, ink = "#1d9bf0", size = 1.5, markup = MARKUP }) {
+  function create({ layer, ink = "#1d9bf0", size = 1.25, markup = MARKUP }) {
     const style = JSON.parse(JSON.stringify(STYLE));
     const hand = document.createElement("div");
     hand.setAttribute("aria-hidden", "true");
