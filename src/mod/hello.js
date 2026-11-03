@@ -67,14 +67,22 @@ async function show() {
 
 // Runs inside the GitHub or X tab, after hand.js, so it can only use what's there. Finds the button, points at it a few times,
 // and leaves early once it's clicked. On X only the Follow for `handle` counts, since the page is full of other people's, and on
-// that account's own profile there's none, so the hand doesn't come at all.
+// that account's own profile there's none, so the hand doesn't come at all. Logged out, X draws its profile differently: its
+// Follow is labelled just "Follow", which on that account's profile can only be theirs, and bars about cookies and logging in
+// cover the bottom of the page, so those are hidden while the hand is there.
 function pointInTab(kind, handle) {
   if (globalThis.asideLatePointing) return;
   globalThis.asideLatePointing = true;
+  const onProfile = location.pathname.split("/")[1]?.toLowerCase() === handle.toLowerCase();
   const SELECTORS = {
     star: ['[data-testid="star-button"]', '[data-testid="unstar-button"]', '[aria-label^="Star this repository"]', '[aria-label^="Unstar this repository"]'],
-    follow: [`[data-testid$="-follow"][aria-label$="@${handle}" i]`, `[data-testid$="-unfollow"][aria-label$="@${handle}" i]`],
+    follow: [
+      `[data-testid$="-follow"][aria-label$="@${handle}" i]`,
+      `[data-testid$="-unfollow"][aria-label$="@${handle}" i]`,
+      ...(onProfile ? ['a[aria-label="Follow"]', 'button[aria-label="Follow"]', 'a[aria-label="Following"]', 'button[aria-label="Following"]'] : []),
+    ],
   };
+  const COVERS = /cookies|continue to x|log in|sign up/i;
   const LABELS = { star: /^(Star|Starred)\b/ };
   const onScreen = element => {
     const box = element.getBoundingClientRect();
@@ -89,6 +97,22 @@ function pointInTab(kind, handle) {
     return [...document.querySelectorAll("a, button, [role=button]")].find(element => onScreen(element) && LABELS[kind].test(element.textContent.trim()));
   };
 
+  // Bars fixed over the lower part of X's page, put back as they were when the hand leaves.
+  const hidden = new Map();
+  const uncover = () => {
+    if (kind !== "follow") return;
+    for (const element of document.querySelectorAll('[data-testid="BottomBar"], #layers > div, aside, div[class*="fixed"]')) {
+      if (hidden.has(element) || getComputedStyle(element).position !== "fixed" || !COVERS.test(element.textContent)) continue;
+      if (element.getBoundingClientRect().top < innerHeight / 3) continue;
+      hidden.set(element, element.style.getPropertyValue("visibility"));
+      element.style.setProperty("visibility", "hidden", "important");
+    }
+  };
+  const recover = () => {
+    for (const [element, visibility] of hidden) element.style.setProperty("visibility", visibility);
+    hidden.clear();
+  };
+
   const host = document.createElement("div");
   Object.assign(host.style, { position: "fixed", inset: "0", pointerEvents: "none", zIndex: "2147483647" });
   const layer = host.attachShadow({ mode: "closed" });
@@ -97,6 +121,7 @@ function pointInTab(kind, handle) {
   const done = () => {
     hand.remove();
     host.remove();
+    recover();
   };
 
   (async () => {
@@ -104,6 +129,7 @@ function pointInTab(kind, handle) {
     let target = null;
     for (let waited = 0; !target && waited < 20000; waited += 300) {
       target = find();
+      uncover();
       if (!target) await new Promise(resolve => setTimeout(resolve, 300));
     }
     if (!target) return done();
@@ -127,6 +153,7 @@ function pointInTab(kind, handle) {
     let mine = hand.generation;
     try {
       for (let round = 0; round < 3; round++) {
+        uncover();
         await hand.circle(live(), mine);
         await hand.moveTo(hand.center(live()), mine, 380);
         await hand.tapTap(mine);
