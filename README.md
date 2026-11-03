@@ -9,9 +9,19 @@ can be switched on and off, or installed, while the browser runs.
 ## Use
 
 Download `AsideLate-<version>.exe` from [Releases](https://github.com/TheCubiq/aside-late/releases) and run it. It's about
-9 MB, and holds everything below already compiled, as well as its source. Press **Patch and start Aside**. That takes seconds and
-downloads nothing. It asks before closing an Aside that's running, and only once everything's ready. **Add a desktop shortcut**
-gives you one that does this in one step from then on.
+9 MB, and holds everything below already compiled, as well as its source. Press **Patch Aside**. That takes seconds, downloads
+nothing and leaves a running Aside alone. Then press **Start Aside**, which asks before closing an Aside that's running.
+**Add to desktop** and **Add to Start menu** make a shortcut that starts Aside patched with no window of its own. If Aside is
+already running with the patches, the shortcut opens a new window in it.
+
+Aside started by that shortcut or by **Start Aside** shows on the taskbar as **Aside (patched)**, apart from plain Aside. Pin it
+from there and the pin starts it patched. Started any other way, Aside groups under its own icon as before.
+
+The shortcuts and pins start a copy of the program kept in `%LOCALAPPDATA%\AsideLate`. Patching with a newer version replaces
+that copy, so existing shortcuts and pins stay as they are.
+
+Opened again once Aside is patched, the window offers the same buttons, plus **Patch again** and **Build from source**. Both
+close a running Aside first, after asking.
 
 Patches start off. Turn on the ones you want in **Settings → Patched stuff → Mods**.
 
@@ -43,7 +53,7 @@ installs one without a restart.
 | `--without <id>` | Leave a patch out of this launch. Repeat it for more. `settings` removes the settings page |
 | `--exe <Aside.exe>` | Use another installation |
 | `--scan <Aside.dll> ...` | Show whether each patch finds what it needs, without running anything |
-| `--shortcut [path]` | Make a shortcut to `aside-late.exe`, on the desktop unless a path is given |
+| `--shortcut [path]` | Make a shortcut to `aside-late.exe`, on the desktop unless a path is given. `--to`, `--arguments`, `--icon` and `--app-id` change what it starts, its icon and its taskbar ID |
 
 Anything else goes to Aside, such as `--user-data-dir=<path>`.
 
