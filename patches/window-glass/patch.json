@@ -1,0 +1,8 @@
+{
+  "id": "window-glass",
+  "version": "1.0.0",
+  "sdk": 1,
+  "title": "Window glass",
+  "description": "Make the window frosted glass, blurring what's behind it instead of Aside's tint from the wallpaper.",
+  "tested": ["1.0.1022.1"]
+}
