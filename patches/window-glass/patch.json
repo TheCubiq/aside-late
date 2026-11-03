@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "sdk": 1,
   "title": "Window glass",
-  "description": "Make the window frosted glass, blurring what's behind it instead of Aside's tint from the wallpaper.",
-  "tested": ["1.0.1022.1"]
+  "description": "Make the window glass like Windows Terminal: what's behind it shows through blurred, under the theme's colour at the opacity you set.",
+  "tested": ["1.0.1022.1"],
+  "options": [
+    {"key": "opacity", "type": "slider", "title": "Background opacity", "default": 40, "min": 0, "max": 100, "unit": "%"}
+  ]
 }
