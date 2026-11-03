@@ -111,6 +111,7 @@ Each patch here explains itself:
 - [bookmark-folder-appearance](patches/bookmark-folder-appearance/README.md)
 - [sidebar-tweaks](patches/sidebar-tweaks/README.md)
 - [window-tweaks](patches/window-tweaks/README.md)
+- [window-glass](patches/window-glass/README.md)
 - [chats](patches/chats/README.md)
 - [ask-aside](patches/ask-aside/README.md)
 
