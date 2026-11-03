@@ -1,16 +1,16 @@
 An alpha of the Aside Late window.
 
-Download the exe and run it. Press **Patch and start Aside**. It takes seconds and downloads nothing, then asks before closing an Aside that's running.
+Download the exe and run it. Press **Patch Aside**. It takes seconds, downloads nothing and leaves a running Aside alone. Then press **Start Aside**, which asks before closing an Aside that's running.
 
-Patches now start off. Turn on the ones you want in Aside's **Settings → Patched stuff → Mods**. If you've used Aside Late before, your patches stay as you set them.
+Patches start off. Turn on the ones you want in Aside's **Settings → Patched stuff → Mods**. If you've used Aside Late before, your patches stay as you set them.
 
 New in this alpha:
 
-- No compiler for normal use. Everything comes built inside the exe.
-- **Build from source instead** is there if you'd rather compile it yourself. That downloads a compiler, 69 MB and about 740 MB on disk.
-- Patches have versions. Mods offers **Update** only when a patch's version rises, for official patches too.
-- Installing or updating a patch from GitHub compiles it, so the first time downloads the same compiler. Mods says so before you press the button.
-- Unpacking the compiler no longer opens a window.
+- **Add to desktop** and **Add to Start menu** make a shortcut that starts Aside patched, with no window of its own. Aside started that way shows on the taskbar as **Aside (patched)**, so a pin there starts it patched too.
+- Opened again once Aside is patched, the window offers **Patch again** and **Build from source** as well.
+- New patch, **Window glass**: the window turns frosted glass, blurring what's behind it, with a **Background opacity** slider like Windows Terminal's.
+- The Aside Late window itself is frosted glass now.
+- The first patched start opens a thank-you tab, once.
 
 To undo everything, quit Aside and start it normally. To remove it, delete `%LOCALAPPDATA%\AsideLate`.
 
