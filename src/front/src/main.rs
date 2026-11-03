@@ -184,12 +184,13 @@ impl App_ {
     fn start(&mut self, close: Option<Running>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(paths) = self.paths.clone() else { return };
         let status = self.status.clone();
+        let from_shortcut = self.closes_when_done;
         let work = move || {
             status.lock().unwrap().stage = Stage::Starting;
             if let Some(running) = close {
                 engine::terminate(&paths, running)?;
             }
-            engine::start(&paths)
+            engine::start(&paths, from_shortcut)
         };
         self.run(work, Self::started, window, cx);
     }
@@ -443,9 +444,25 @@ impl Render for App_ {
     }
 }
 
+/// What a shortcut does. Returns whether that was all it took, and the window only opens if there's something to ask or to show.
+fn launch_without_a_window(arguments: &[OsString]) -> bool {
+    let Ok(paths) = engine::find_paths(arguments.to_vec()) else { return false };
+    if engine::prepare(&paths, false, &engine::new_status(), &AtomicBool::new(false)).is_err() {
+        return false;
+    }
+    match engine::find_running(&paths) {
+        Some(running) if engine::has_patches(running) => engine::open_window_in_running(&paths).is_ok(),
+        Some(_) => false,
+        None => engine::start(&paths, true).is_ok(),
+    }
+}
+
 fn main() {
     let mut arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     let launch = arguments.iter().position(|argument| argument == "--launch").map(|at| arguments.remove(at)).is_some();
+    if launch && launch_without_a_window(&arguments) {
+        return;
+    }
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
         gpui_kit::init(cx);
         Theme::sync_system_appearance(None, cx);

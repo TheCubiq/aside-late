@@ -16,7 +16,7 @@ use std::thread;
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, TRUE, WAIT_OBJECT_0};
 use windows_sys::Win32::Networking::WinHttp::*;
-use windows_sys::Win32::System::Threading::{CreateProcessW, GetExitCodeProcess, INFINITE, OpenProcess, PROCESS_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, STARTF_USESHOWWINDOW, STARTUPINFOW, TerminateProcess, WaitForSingleObject};
+use windows_sys::Win32::System::Threading::{CreateProcessW, GetExitCodeProcess, INFINITE, OpenMutexW, OpenProcess, PROCESS_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, STARTF_USESHOWWINDOW, STARTUPINFOW, TerminateProcess, WaitForSingleObject};
 use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, FindWindowExW, GetClassNameW, GetWindowTextW, GetWindowThreadProcessId, HWND_MESSAGE, IsWindowVisible, SW_HIDE};
 
 const COMPILER_HOST: &str = "github.com";
@@ -28,6 +28,8 @@ pub const COMPILER_MEGABYTES: u64 = (COMPILER_BYTES + 500_000) / 1_000_000;
 pub const COMPILER_UNPACKED_MEGABYTES: u64 = 740;
 const COMPILER_FILES: usize = 9_451;
 const NO_WINDOW: u32 = 0x0800_0000;
+// What the taskbar groups our shortcut and the windows it starts by.
+const APP_ID: &str = "AsideLate";
 const MAX_JOBS: usize = 6;
 
 const BUNDLE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bundle.bin"));
@@ -431,7 +433,7 @@ fn build(paths: &Paths, status: &Shared, cancel: &AtomicBool, from: f32, span: f
     core.extend(args(["-DASIDE_LATE_MOD", "-Isrc/mod", "-shared", "-o"]));
     core.push(mod_dll.clone().into());
     core.extend(c_files.drain(..).map(OsString::from));
-    core.push("-lwinhttp".into());
+    core.extend(args(["-lwinhttp", "-lole32"]));
 
     let mut patches = Vec::new();
     let patches_root = source.join("patches");
@@ -564,6 +566,23 @@ pub fn find_running(paths: &Paths) -> Option<Running> {
     }
 }
 
+/// The mod holds a mutex named after its process for as long as it runs.
+pub fn has_patches(running: Running) -> bool {
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    let name = wide(format!("Local\\AsideLateMod-{}", running.process));
+    let mark = unsafe { OpenMutexW(SYNCHRONIZE, 0, name.as_ptr()) };
+    if mark.is_null() {
+        return false;
+    }
+    unsafe { CloseHandle(mark) };
+    true
+}
+
+/// An Aside that's running takes anything started on its profile and opens a window for it.
+pub fn open_window_in_running(paths: &Paths) -> Result<(), String> {
+    Command::new(&paths.exe).args(&paths.passed_on).spawn().map(drop).map_err(|error| format!("Couldn't reach Aside: {error}"))
+}
+
 /// Force-quits Aside. Only ever after the person has said yes.
 pub fn terminate(paths: &Paths, running: Running) -> Result<(), String> {
     let failed = || "Windows wouldn't let Aside be closed. Close it yourself and try again.".to_string();
@@ -584,8 +603,14 @@ pub fn terminate(paths: &Paths, running: Running) -> Result<(), String> {
 }
 
 /// Starts Aside through the launcher, which stays only as long as it takes to see the patches go in.
-pub fn start(paths: &Paths) -> Result<(), String> {
-    let output = Command::new(paths.app().join("aside-late.exe")).arg("--exe").arg(&paths.exe).args(&paths.passed_on).env("ASIDE_LATE_HOME", &paths.home).creation_flags(NO_WINDOW).stdin(Stdio::null()).output().map_err(|error| format!("Couldn't start the launcher: {error}"))?;
+///
+/// `from_shortcut` gives its windows the shortcut's app ID, so they appear under its pin. Started any other way, they stay under Aside's.
+pub fn start(paths: &Paths, from_shortcut: bool) -> Result<(), String> {
+    let mut launcher = Command::new(paths.app().join("aside-late.exe"));
+    if from_shortcut {
+        launcher.env("ASIDE_LATE_APP_ID", APP_ID);
+    }
+    let output = launcher.arg("--exe").arg(&paths.exe).args(&paths.passed_on).env("ASIDE_LATE_HOME", &paths.home).creation_flags(NO_WINDOW).stdin(Stdio::null()).output().map_err(|error| format!("Couldn't start the launcher: {error}"))?;
     if output.status.success() {
         return Ok(());
     }
@@ -603,7 +628,6 @@ pub fn make_shortcut(paths: &Paths) -> Result<(), String> {
         fs::create_dir_all(&paths.home).map_err(describe)?;
         fs::copy(&current, &kept).map_err(describe)?;
     }
-    let script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut([Environment]::GetFolderPath('Desktop')+'\\Aside (patched).lnk');$s.TargetPath=$env:AL_TARGET;$s.Arguments='--launch';$s.IconLocation=$env:AL_ICON;$s.Description='Aside with aside-late''s patches';$s.Save()";
-    let done = Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", script]).env("AL_TARGET", &kept).env("AL_ICON", &paths.exe).creation_flags(NO_WINDOW).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(describe)?;
+    let done = Command::new(paths.app().join("aside-late.exe")).arg("--shortcut").arg("--to").arg(&kept).args(["--arguments", "--launch", "--app-id", APP_ID]).arg("--icon").arg(&paths.exe).env("ASIDE_LATE_HOME", &paths.home).creation_flags(NO_WINDOW).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(describe)?;
     if done.success() { Ok(()) } else { Err("Windows wouldn't make the shortcut.".into()) }
 }
