@@ -228,6 +228,19 @@ if (still) {
   scribble.setAttribute("d", points.map((p, i) => `${i ? "L" : "M"}${p.x} ${p.y}`).join(""));
   scribble.setAttribute("opacity", "1");
 } else {
-  requestAnimationFrame(frame);
-  show();
+  // Opened at startup, the tab can sit hidden for a while, so the entrance and the hand wait until someone can see them.
+  // Someone moving the mouse over it can see it, whatever the page was told.
+  const wake = ["pointermove", "pointerdown", "focus", "keydown"];
+  let begun = false;
+  const begin = event => {
+    if (begun || (document.visibilityState !== "visible" && !wake.includes(event?.type))) return;
+    begun = true;
+    document.querySelector(".card").classList.add("enter");
+    last = performance.now();
+    requestAnimationFrame(frame);
+    show();
+  };
+  document.addEventListener("visibilitychange", begin);
+  for (const type of wake) addEventListener(type, begin, { once: true });
+  begin();
 }
