@@ -35,6 +35,20 @@ async function show() {
         await hand.sleep(600, mine);
         continue;
       }
+      if (target === later && !hovered) {
+        // Both done: circle Close, wave goodbye on the way out, point, circle it again, and a smaller wave.
+        await hand.circle(later, mine);
+        await Promise.all([hand.moveTo(hand.waveSpot(later), mine, 380), hand.wave(mine, 1500)]);
+        await hand.moveTo(hand.center(later), mine, 380);
+        await hand.tapTap(mine);
+        hand.fadeInk();
+        await hand.sleep(500, mine);
+        await hand.circle(later, mine);
+        await Promise.all([hand.moveTo(hand.waveSpot(later), mine, 380), hand.wave(mine, 800, 0.55)]);
+        hand.fadeInk();
+        await hand.sleep(1300, mine);
+        continue;
+      }
       await hand.circle(target, mine);
       await hand.moveTo(hand.center(target), mine, 380);
       await hand.tapTap(mine);
