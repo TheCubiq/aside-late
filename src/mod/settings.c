@@ -8,6 +8,8 @@
 #define MAX_RECENT 32
 
 __asm__(".section .rdata,\"dr\"\n.Lscript:\n.incbin \"src/mod/settings.js\"\n.Lscript_end:\n.text");
+// The thank-you page the launcher opens once, at /aside-late/hello.html.
+__asm__(".section .rdata,\"dr\"\n.Lhello_page:\n.incbin \"src/mod/hello.html\"\n.Lhello_page_end:\n.Lhello_script:\n.incbin \"src/mod/hello.js\"\n.Lhello_script_end:\n.text");
 
 static const wchar_t Extension[] = L"\\AsideAgentManager\\";
 static const wchar_t Folder[] = L"\\aside-late\\";
@@ -280,6 +282,15 @@ void SettingsStart(BYTE *base) {
     BOOL wrote = WriteWhole(path, script, end - script);
     HomePath(path, L"web\\ok.txt");
     wrote = WriteWhole(path, "ok", 2) && wrote;
+    const char *page, *page_end, *hello, *hello_end;
+    __asm__("leaq .Lhello_page(%%rip), %0" : "=r"(page));
+    __asm__("leaq .Lhello_page_end(%%rip), %0" : "=r"(page_end));
+    __asm__("leaq .Lhello_script(%%rip), %0" : "=r"(hello));
+    __asm__("leaq .Lhello_script_end(%%rip), %0" : "=r"(hello_end));
+    HomePath(path, L"web\\hello.html");
+    WriteWhole(path, page, page_end - page);
+    HomePath(path, L"web\\hello.js");
+    WriteWhole(path, hello, hello_end - hello);
     SaveBrowserVersion(base);
     SaveGithubAddresses();
     if (!wrote) {

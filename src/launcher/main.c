@@ -19,6 +19,20 @@ static void PrepareHome(wchar_t *home) {
     CreateDirectoryW(web, NULL);
 }
 
+// A thank-you page, opened in a tab of its own on the first start with the patches and never again. The mod serves it from
+// inside Aside's own extension, so it needs the settings part of the mod.
+#define HELLO_PAGE L"chrome-extension://fjdhphbdlfjogobdofoaagnlnkoibdge/aside-late/hello.html"
+
+static BOOL SayHello(const wchar_t *home, const wchar_t *skipped) {
+    if (wcsstr(skipped, L"settings,")) return FALSE;
+    wchar_t mark[MAX_PATH];
+    swprintf(mark, MAX_PATH, L"%ls\\said-hello.txt", home);
+    HANDLE file = CreateFileW(mark, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return FALSE;
+    CloseHandle(file);
+    return TRUE;
+}
+
 // The shortcut's app ID is what the taskbar groups by, so its windows can be told to appear under its pin.
 static void SetShortcutAppId(IShellLinkW *link, const wchar_t *appId) {
     static const IID storeId = {0x886d8eeb, 0x8cf2, 0x4446, {0x8d, 0x02, 0xcd, 0xba, 0x1d, 0xbd, 0xcf, 0x99}};
@@ -136,7 +150,8 @@ int wmain(int argc, wchar_t **argv) {
     FindUserDataDir(first, argc, argv, userDataDir);
     if (!ReadyToLaunch(userDataDir, home)) return 1;
 
-    size_t size = wcslen(exe) + 3;
+    const wchar_t *hello = SayHello(home, skipped) ? HELLO_PAGE : NULL;
+    size_t size = wcslen(exe) + 3 + (hello ? wcslen(hello) + 3 : 0);
     for (int i = first; i < argc; i++) size += wcslen(argv[i]) + 3;
     wchar_t *commandLine = malloc(size * sizeof *commandLine);
     if (!commandLine) return 1;
@@ -144,6 +159,11 @@ int wmain(int argc, wchar_t **argv) {
     for (int i = first; i < argc; i++) {
         wcscat(commandLine, L" \"");
         wcscat(commandLine, argv[i]);
+        wcscat(commandLine, L"\"");
+    }
+    if (hello) {
+        wcscat(commandLine, L" \"");
+        wcscat(commandLine, hello);
         wcscat(commandLine, L"\"");
     }
     return Launch(exe, commandLine, skipped);

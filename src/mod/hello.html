@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>heya!</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --page: #0b0b0d;
+    --card: #17171a;
+    --line: rgb(255 255 255 / 0.08);
+    --text: #f4f4f5;
+    --muted: #a1a1aa;
+    --button: #f4f4f5;
+    --button-text: #0b0b0d;
+    --ghost: rgb(255 255 255 / 0.06);
+    --ink: #1d9bf0;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --page: #e9e9ec;
+      --card: #ffffff;
+      --line: rgb(0 0 0 / 0.08);
+      --text: #18181b;
+      --muted: #52525b;
+      --button: #18181b;
+      --button-text: #ffffff;
+      --ghost: rgb(0 0 0 / 0.05);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+    background: radial-gradient(120% 90% at 50% 40%, color-mix(in srgb, var(--page) 80%, var(--ink) 6%), var(--page));
+    color: var(--text);
+    font: 15px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    position: relative;
+    width: min(440px, 100%);
+    padding: 28px;
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    background: var(--card);
+    box-shadow: 0 24px 60px rgb(0 0 0 / 0.35), 0 2px 8px rgb(0 0 0 / 0.2);
+    animation: pop 420ms cubic-bezier(0.2, 1.4, 0.4, 1) both;
+  }
+  @keyframes pop { from { opacity: 0; transform: translateY(12px) scale(0.96); } }
+  h1 { margin: 0 0 8px; font-size: 26px; line-height: 1.2; font-weight: 650; letter-spacing: -0.01em; text-wrap: balance; }
+  p { margin: 0; color: var(--muted); text-wrap: pretty; }
+  .buttons { display: flex; gap: 10px; margin-top: 22px; }
+  .buttons a {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 42px;
+    padding: 0 14px;
+    border-radius: 12px;
+    background: var(--button);
+    color: var(--button-text);
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: transform 120ms ease, opacity 120ms ease;
+  }
+  .buttons a:active { transform: scale(0.97); }
+  .buttons a:focus-visible, .later:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+  .buttons svg { width: 17px; height: 17px; flex: none; fill: currentColor; }
+  .buttons a.done { opacity: 0.55; }
+  .later {
+    display: block;
+    margin: 12px auto 0;
+    padding: 8px 14px;
+    border: 0;
+    border-radius: 10px;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    cursor: pointer;
+  }
+  .later:hover { background: var(--ghost); color: var(--text); }
+  .promise { margin-top: 14px; font-size: 12px; text-align: center; color: color-mix(in srgb, var(--muted) 75%, transparent); }
+  @media (max-width: 420px) { .buttons { flex-direction: column; } }
+
+  /* The hand and its scribbles sit over everything, and never take a click. */
+  .ink, .hand { position: fixed; inset: 0; pointer-events: none; }
+  .ink { width: 100%; height: 100%; }
+  .ink path { fill: none; stroke: var(--ink); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; transition: opacity 400ms ease; }
+  .hand { inset: auto; left: 0; top: 0; will-change: transform; }
+  .hand svg { position: absolute; left: -64px; top: -6px; overflow: visible; filter: drop-shadow(0 6px 10px rgb(0 0 0 / 0.35)); }
+</style>
+</head>
+<body>
+  <main class="card" role="dialog" aria-labelledby="title" aria-describedby="about">
+    <h1 id="title">heya, thanks for using my patch stuff thing</h1>
+    <p id="about">I made it for fun, and it's free. If it made your Aside a little nicer, a star or a follow would make my day.</p>
+    <div class="buttons">
+      <a id="star" href="https://github.com/TheCubiq/aside-late" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        Star on GitHub
+      </a>
+      <a id="follow" href="https://x.com/CubiqNation" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+        Follow @CubiqNation
+      </a>
+    </div>
+    <button class="later" id="later" type="button">nah, maybe later</button>
+    <div class="promise">You'll only see this once. Pinky promise.</div>
+  </main>
+
+  <svg class="ink" aria-hidden="true"><path id="scribble" opacity="0"/></svg>
+
+  <div class="hand" id="hand" aria-hidden="true">
+    <!-- Points straight up, with the fingertip at (64, 6). The page turns it. -->
+    <svg width="128" height="1400" viewBox="-64 -6 128 1400">
+      <g stroke="#111" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+        <rect x="11" y="138" width="24" height="1300" rx="6" fill="#1b1b1d"/>
+        <rect x="-10" y="114" width="66" height="34" rx="12" fill="#fff"/>
+        <path d="M-6 126h58" fill="none"/>
+        <rect x="6" y="38" width="26" height="36" rx="13" fill="#fff"/>
+        <rect x="24" y="45" width="24" height="36" rx="12" fill="#fff"/>
+        <rect x="40" y="54" width="20" height="34" rx="10" fill="#fff"/>
+        <rect x="-18" y="56" width="80" height="66" rx="26" fill="#fff"/>
+        <rect x="-12" y="0" width="24" height="76" rx="12" fill="#fff"/>
+        <ellipse cx="-14" cy="92" rx="20" ry="12" transform="rotate(-48 -14 92)" fill="#fff"/>
+        <path d="M18 86q3 10 0 20M31 86q3 10 0 20M44 88q3 9 0 18" fill="none" stroke-width="3.5"/>
+      </g>
+    </svg>
+  </div>
+
+  <script type="module" src="/aside-late/hello.js"></script>
+</body>
+</html>
