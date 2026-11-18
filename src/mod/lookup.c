@@ -324,3 +324,65 @@ DWORD LookupNeedsLayout(const Lookup *lookup, const RUNTIME_FUNCTION *layout) {
     }
     return 0;
 }
+
+// What patches have worked out about a build, by name, so the next patch asking the same skips the work. A build is told
+// apart by its header, so this outlives the copy it was worked out on, and a scan of other builds keeps them apart.
+#define MAX_REMEMBERED 256
+#define REMEMBERED_NAME 64
+
+typedef struct {
+    DWORD stamp, size;
+    char name[REMEMBERED_NAME];
+    void *value;
+    size_t valueSize;
+} Remembered;
+
+static Remembered Memory[MAX_REMEMBERED];
+static int MemoryCount;
+static SRWLOCK MemoryLock = SRWLOCK_INIT;
+
+static void BuildOf(const Lookup *lookup, DWORD *stamp, DWORD *size) {
+    const IMAGE_NT_HEADERS64 *nt = (const void *)(lookup->base + ((const IMAGE_DOS_HEADER *)lookup->base)->e_lfanew);
+    *stamp = nt->FileHeader.TimeDateStamp;
+    *size = nt->OptionalHeader.SizeOfImage;
+}
+
+static Remembered *FindRemembered(const Lookup *lookup, const char *name) {
+    DWORD stamp, size;
+    BuildOf(lookup, &stamp, &size);
+    for (int i = 0; i < MemoryCount; i++)
+        if (Memory[i].stamp == stamp && Memory[i].size == size && !strcmp(Memory[i].name, name)) return &Memory[i];
+    return NULL;
+}
+
+BOOL LookupRecall(const Lookup *lookup, const char *name, void *value, size_t size) {
+    AcquireSRWLockShared(&MemoryLock);
+    const Remembered *found = FindRemembered(lookup, name);
+    BOOL recalled = found && found->valueSize == size;
+    if (recalled) memcpy(value, found->value, size);
+    ReleaseSRWLockShared(&MemoryLock);
+    return recalled;
+}
+
+void LookupRemember(const Lookup *lookup, const char *name, const void *value, size_t size) {
+    if (strlen(name) >= REMEMBERED_NAME) return;
+    void *copy = malloc(size);
+    if (!copy) return;
+    memcpy(copy, value, size);
+    AcquireSRWLockExclusive(&MemoryLock);
+    Remembered *slot = FindRemembered(lookup, name);
+    if (!slot && MemoryCount < MAX_REMEMBERED) {
+        slot = &Memory[MemoryCount++];
+        BuildOf(lookup, &slot->stamp, &slot->size);
+        strcpy(slot->name, name);
+        slot->value = NULL;
+    }
+    if (slot) {
+        free(slot->value);
+        slot->value = copy;
+        slot->valueSize = size;
+        copy = NULL;
+    }
+    ReleaseSRWLockExclusive(&MemoryLock);
+    free(copy);
+}

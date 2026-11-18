@@ -55,3 +55,10 @@ SDK BOOL LookupViewLayout(const Lookup *lookup, DWORD *boundsOffset, DWORD *sche
 SDK DWORD LookupNeedsLayout(const Lookup *lookup, const RUNTIME_FUNCTION *layout);
 // The function holding a trace that's only in one place, or NULL.
 SDK const RUNTIME_FUNCTION *LookupTraced(const Lookup *lookup, const char *trace);
+
+// A place to keep what a patch worked out about this build, under a name of its choosing, so another patch that works out
+// the same thing can take the answer instead. Nothing here knows what's kept. Recall fills `value` and returns TRUE only if
+// something of exactly `size` bytes was kept under that name for this build. Names should say what was found and how, like
+// "browser.layout/1", and change when the rule or what's kept does.
+SDK BOOL LookupRecall(const Lookup *lookup, const char *name, void *value, size_t size);
+SDK void LookupRemember(const Lookup *lookup, const char *name, const void *value, size_t size);
