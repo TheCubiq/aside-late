@@ -4,7 +4,7 @@
   "sdk": 1,
   "title": "Window glass",
   "description": "Make the window glass like Windows Terminal: what's behind it shows through blurred, under black or white at the opacity you set.",
-  "tested": ["1.0.1022.1"],
+  "tested": ["1.0.1022.1", "1.0.1116.2"],
   "options": [
     {"key": "opacity", "type": "slider", "title": "Background opacity", "default": 40, "min": 0, "max": 100, "unit": "%"}
   ]

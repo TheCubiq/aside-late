@@ -1,6 +1,6 @@
 {
   "id": "chats",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "sdk": 1,
   "title": "Hide Chats",
   "description": "Hide the Chats sidebar section.",

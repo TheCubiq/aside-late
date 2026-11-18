@@ -4,7 +4,7 @@
   "sdk": 1,
   "title": "Window tweaks",
   "description": "Collapse the top bar until it's hovered, and set the inset around the page.",
-  "tested": ["1.0.1022.1"],
+  "tested": ["1.0.1022.1", "1.0.1116.2"],
   "options": [
     {"key": "top.collapse", "type": "switch", "title": "Collapse the top bar until it's hovered", "default": false},
     {"key": "top.reveal", "type": "select", "title": "When it's revealed", "when": "top.collapse", "default": "over", "choices": [{"value": "over", "title": "Slide over the page"}, {"value": "push", "title": "Push the page down"}, {"value": "uncover", "title": "Uncover it, like Zen"}]},
