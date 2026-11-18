@@ -74,7 +74,8 @@ static const char *FindGetInput(const Lookup *lookup) {
         if (memcmp(p, keep, sizeof keep) || memcmp(p + 7, store, sizeof store)) continue;
         for (DWORD back = rva; back > rva - 0x100; back--) {
             const BYTE *b = lookup->base + back;
-            if (memcmp(b, "\x48\x8d\x05", 3) || memcmp(b + 7, "\x49\x89\x46\x20", 4)) continue;
+            // mov [reg+20h],rax: it was r14 and is rbx. The nearest is the one the controller keeps first.
+            if (memcmp(b, "\x48\x8d\x05", 3) || (b[7] & 0xfe) != 0x48 || b[8] != 0x89 || (b[9] & 0xf8) != 0x40 || (b[9] & 7) == 4 || b[10] != 0x20) continue;
             GetInputRva = back + 7 + *(const INT32 *)(b + 3);
             break;
         }
@@ -95,15 +96,18 @@ static void FindHideOnBlur(const Lookup *lookup) {
     DWORD start = lookup->text->VirtualAddress, end = start + lookup->text->Misc.VirtualSize - 40, found = 0;
     for (DWORD rva = start; rva < end; rva++) {
         const BYTE *p = lookup->base + rva;
-        if (memcmp(p, "\x48\x8b\x8e", 3) || memcmp(p + 7, "\x48\x85\xc9\x74", 4) || p[12] != 0xe8) continue;
-        if (memcmp(p + 17, "\x84\xc0\x75", 3) || memcmp(p + 21, "\x80\xbe", 2) || p[27] != 1 || memcmp(p + 28, "\x0f\x84", 2) || p[34] != 0xe9) continue;
+        if (memcmp(p, "\x48\x8b\x8e", 3)) continue;
+        // The test for no widget went away in 1.0.1116.2, so the call can follow straight on.
+        const BYTE *q = !memcmp(p + 7, "\x48\x85\xc9\x74", 4) ? p + 12 : p + 7;
+        if (q[0] != 0xe8) continue;
+        if (memcmp(q + 5, "\x84\xc0\x75", 3) || memcmp(q + 9, "\x80\xbe", 2) || q[15] != 1 || memcmp(q + 16, "\x0f\x84", 2) || q[22] != 0xe9) continue;
         // It lives with what evaluates the controller, and anything else of this shape doesn't.
         const RUNTIME_FUNCTION *fn = LookupFunction(lookup, rva);
         BOOL evaluates = FALSE;
         for (DWORD call = fn ? fn->BeginAddress : 0; fn && call + 5 <= rva && !evaluates; call++) evaluates = IsCallTo(lookup->base + call, call, EvaluateRva);
         if (!evaluates) continue;
         if (found) return;
-        found = rva + 28;
+        found = (DWORD)(q + 16 - lookup->base);
     }
     HideOnBlurRva = found;
 }
