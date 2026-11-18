@@ -108,8 +108,9 @@ A patch's files include each other from its top folder, like `#include "resolve/
 
 What several patches find in Aside the same way is in `patches/shared`, which isn't a patch. They include it as
 `#include "shared/browser.h"`, so a rule that stops matching a new build is fixed in one place. It's headers only, since a patch
-compiles every `.c` file in its folder. Installing a patch from GitHub fetches `patches/shared` too, and a change there needs the
-version of every patch that includes it raised. See [patches/shared](patches/shared/README.md).
+compiles every `.c` file in its folder. Installing a patch from GitHub fetches `patches/shared` from the same repo too, and a
+change there needs the version of every patch that includes it raised. It's local to each repo: a patch elsewhere can copy
+these into its own repo's `patches/shared`, but can't use or add to this one. See [patches/shared](patches/shared/README.md).
 
 Each patch here explains itself:
 
