@@ -92,8 +92,9 @@ int LookupStrings(const Lookup *lookup, const char *string, DWORD *found, int ma
     int count = 0;
     for (const BYTE *p = start; (p = memchr(p, string[0], end - p)) && p + len <= end; p++) {
         if (memcmp(p, string, len)) continue;
-        // A suffix of a longer string isn't this string.
-        if (p > start && p[-1]) continue;
+        // A suffix of a longer string isn't this string. Strings aren't always packed after a NUL, so text before it is what
+        // says it's part of something longer.
+        if (p > start && p[-1] >= 0x20 && p[-1] < 0x7f) continue;
         if (count < max) found[count] = (DWORD)(p - lookup->base);
         count++;
     }
