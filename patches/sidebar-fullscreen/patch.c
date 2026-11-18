@@ -40,6 +40,7 @@ static Watched Browsers[MAX_BROWSERS];
 static int BrowserCount;
 static UINT_PTR Timer;
 static DWORD ParentOffset;
+static DWORD RegionOffset;  // Which of the layout's views is the sidebar's, once seen. 0 until then.
 static BOOL Enabled;
 static int EdgeWidth = 8, EnterMs = 100, LeaveMs = 500;
 
@@ -86,7 +87,7 @@ static HWND FullscreenWindowOf(const BYTE *view) {
 }
 
 static BYTE *RegionOf(const Watched *watched) {
-    return *(BYTE **)(watched->browser + Native.regionOffset);
+    return RegionOffset ? *(BYTE **)(watched->browser + RegionOffset) : NULL;
 }
 
 // Showing the view tells its parent, which lays out again and hides it, for ever. So for that long it has no parent to tell.
@@ -134,12 +135,27 @@ static Watched *Watch(BYTE *browser) {
     return watched;
 }
 
+// Of the views the layout checks, the sidebar's is the one running the full height of a window that isn't fullscreen, along
+// one of its edges.
+static void LearnRegion(const BYTE *browser) {
+    const int *window = (const int *)(browser + Native.boundsOffset);
+    for (int i = 0; i < Native.regionCount && !RegionOffset; i++) {
+        const BYTE *view;
+        int b[4];
+        if (!SafeRead(browser + Native.regionOffsets[i], &view, sizeof view) || !view || !SafeRead(view + Native.boundsOffset, b, sizeof b)) continue;
+        if (b[2] <= 0 || b[3] != window[3] || (b[0] != 0 && b[0] + b[2] != window[2]) || b[2] * 2 > window[2]) continue;
+        RegionOffset = Native.regionOffsets[i];
+        ModLog("sidebar-fullscreen: the sidebar is at +%#lx", RegionOffset);
+    }
+}
+
 // Outside fullscreen the layout says how wide the sidebar is and which side it's on, for when it's revealed.
 static void BrowserLayout(void *view, void *key) {
     OriginalLayout(view, key);
     if (!Enabled) return;
     BYTE *browser = view;
-    Watched *watched = *(BYTE **)(browser + Native.regionOffset) ? Watch(browser) : NULL;
+    if (!RegionOffset && !FullscreenWindowOf(browser)) LearnRegion(browser);
+    Watched *watched = RegionOffset && *(BYTE **)(browser + RegionOffset) ? Watch(browser) : NULL;
     if (!watched) return;
     const int *bounds = (const int *)(RegionOf(watched) + Native.boundsOffset);
     if (!watched->revealed && !watched->movedAt) {

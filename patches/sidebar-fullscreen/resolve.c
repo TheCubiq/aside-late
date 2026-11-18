@@ -1,19 +1,27 @@
-// Finds the browser's view, from patches/shared, and where its layout keeps the sidebar, by the shape of the code around it.
+// Finds the browser's view, from patches/shared, and the views its layout checks are showing, among which the sidebar's.
 
 #include "resolve.h"
 
 #include "shared/browser.h"
 
-// The layout asks if the sidebar's view is showing, and then the same of the horizontal tab strip:
-// mov rax,[rsi+region]; test rax,rax; je; cmp byte [rax+visible],1; jne; mov rax,[rsi+x]; mov r14b,1
-static DWORD FindRegion(const Lookup *lookup, const RUNTIME_FUNCTION *layout, DWORD visibleOffset) {
-    for (DWORD rva = layout->BeginAddress; rva + 40 <= layout->EndAddress; rva++) {
+// The layout asks whether a view is showing, the sidebar's among others:
+// mov rax,[rsi+view]; test rax,rax; je; cmp byte [rax+visible],1; jne
+// What follows changed between builds, and the sidebar's isn't the only one of this shape any more, so every field asked
+// about this way is kept, and the patch sees which is the sidebar.
+static void FindRegions(const Lookup *lookup, const RUNTIME_FUNCTION *layout, Bindings *bindings) {
+    for (DWORD rva = layout->BeginAddress; rva + 24 <= layout->EndAddress && bindings->regionCount < MAX_REGIONS; rva++) {
         const BYTE *p = lookup->base + rva;
-        if (memcmp(p, "\x48\x8b\x86", 3) || memcmp(p + 7, "\x48\x85\xc0\x0f\x84", 5) || memcmp(p + 16, "\x80\xb8", 2)) continue;
-        if (*(const DWORD *)(p + 18) != visibleOffset || p[22] != 1 || memcmp(p + 23, "\x0f\x85", 2) || memcmp(p + 29, "\x48\x8b\x86", 3) || memcmp(p + 36, "\x41\xb6\x01", 3)) continue;
-        return *(const DWORD *)(p + 3);
+        if (memcmp(p, "\x48\x8b\x86", 3) || memcmp(p + 7, "\x48\x85\xc0", 3)) continue;
+        const BYTE *q = p + 10;
+        if (q[0] == 0x74) q += 2;
+        else if (q[0] == 0x0f && q[1] == 0x84) q += 6;
+        else continue;
+        if (q[0] != 0x80 || q[1] != 0xb8 || *(const DWORD *)(q + 2) != bindings->visibleOffset || q[6] != 1) continue;
+        DWORD offset = *(const DWORD *)(p + 3);
+        BOOL known = FALSE;
+        for (int i = 0; i < bindings->regionCount; i++) known |= bindings->regionOffsets[i] == offset;
+        if (!known) bindings->regionOffsets[bindings->regionCount++] = offset;
     }
-    return 0;
 }
 
 const char *ResolveBindings(const Lookup *lookup, Bindings *bindings) {
@@ -27,6 +35,6 @@ const char *ResolveBindings(const Lookup *lookup, Bindings *bindings) {
     bindings->needsLayoutOffset = browser.needsLayoutOffset;
     if (!LookupVisibility(lookup, &bindings->setVisibleSlot, &bindings->visibleOffset)) return "how views are shown";
     const RUNTIME_FUNCTION *layout = LookupFunction(lookup, browser.layout);
-    if (!layout || !(bindings->regionOffset = FindRegion(lookup, layout, bindings->visibleOffset))) return "where the browser keeps the sidebar";
-    return NULL;
+    if (layout) FindRegions(lookup, layout, bindings);
+    return bindings->regionCount ? NULL : "where the browser keeps the sidebar";
 }
