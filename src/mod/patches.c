@@ -37,6 +37,7 @@ typedef struct {
     SwitchFunction enable, disable;
     OptionFunction option;
     char *optionsJson;   // The manifest's list of options, for the page.
+    char *carriesJson;   // Which patch this was split out of, for taking its switch and options over the first time.
     Option options[MAX_OPTIONS];
     int optionCount;
 } ModPatch;
@@ -274,6 +275,15 @@ static ModPatch *AddPatchFolder(const wchar_t *folder, BOOL installed) {
         patch->needsRebuild = builtFor != ASIDE_LATE_SDK;
         if (patch->needsRebuild) snprintf(patch->error, sizeof patch->error, "Built for another version of Aside Late. Rebuild it to use it.");
         ReadOptions(patch, manifest);
+        free(patch->carriesJson);
+        patch->carriesJson = NULL;
+        const char *carries = FindValue(manifest, "carries");
+        if (carries && *carries == '{') {
+            const char *end = SkipValue(carries);
+            patch->carriesJson = malloc(end - carries + 1);
+            memcpy(patch->carriesJson, carries, end - carries);
+            patch->carriesJson[end - carries] = 0;
+        }
         // Nothing has loaded yet on the first pass, so anything an update left behind can go.
         if (installed && !patch->module) CleanOldBuilds(id, sha);
     }
@@ -320,6 +330,51 @@ static void SaveDisabled(void) {
     fclose(file);
 }
 
+// What a patch has saved for an option, which may be one its manifest no longer lists. FALSE if it's at its default.
+static BOOL SavedOption(const char *id, const char *key, char *out, size_t size) {
+    wchar_t path[PATH_SIZE];
+    OptionsPath(id, path);
+    char *saved = ReadWholeFile(path, NULL);
+    BOOL found = FALSE;
+    for (char *line = saved ? strtok(saved, "\r\n") : NULL; line && !found; line = strtok(NULL, "\r\n")) {
+        char *value = strchr(line, '\t');
+        if (!value) continue;
+        *value++ = 0;
+        if (!strcmp(line, key)) found = snprintf(out, size, "%s", value) >= 0;
+    }
+    free(saved);
+    return found;
+}
+
+// A patch split out of another takes over what it was there: on if that was on with its switch for this on, and the options
+// it took with it, under the same keys. patch.json says so:
+// "carries": {"from": "window-tweaks", "switch": "fullscreen.gap", "default": true, "options": ["edge.width"]}
+static void CarryOver(ModPatch *patch) {
+    char from[ID_SIZE] = "", key[OPTION_SIZE] = "", fallback[8] = "false", value[OPTION_SIZE];
+    const char *field;
+    if ((field = FindValue(patch->carriesJson, "from"))) ValueText(field, from, sizeof from);
+    if ((field = FindValue(patch->carriesJson, "switch"))) ValueText(field, key, sizeof key);
+    if ((field = FindValue(patch->carriesJson, "default"))) ValueText(field, fallback, sizeof fallback);
+    const ModPatch *old = FindPatch(from);
+    if (!old) return;
+    if (!key[0] || !SavedOption(from, key, value, sizeof value)) strcpy(value, fallback);
+    patch->wanted = old->wanted && !strcmp(value, "true");
+    BOOL changed = FALSE;
+    const char *list = FindValue(patch->carriesJson, "options");
+    for (const char *at = list && *list == '[' ? SkipSpace(list + 1) : ""; *at == '"'; ) {
+        ValueText(at, key, sizeof key);
+        for (int i = 0; i < patch->optionCount; i++)
+            if (!strcmp(patch->options[i].key, key) && SavedOption(from, key, value, sizeof value)) {
+                snprintf(patch->options[i].value, OPTION_SIZE, "%s", value);
+                changed = TRUE;
+            }
+        at = SkipSpace(SkipValue(at));
+        if (*at == ',') at = SkipSpace(at + 1);
+    }
+    if (changed) SaveOptions(patch);
+    ModLog("%s carried over from %s: %s", patch->id, from, patch->wanted ? "on" : "off");
+}
+
 // Official patches start off, on a new home and whenever a later build brings a new one. A home from before this
 // keeps what it has, including its patches being on.
 static void TurnOffNewBundled(BOOL newHome) {
@@ -336,7 +391,10 @@ static void TurnOffNewBundled(BOOL newHome) {
         for (const char *at = text; at && (at = strstr(at, patch->id)); at += size)
             if ((at == text || at[-1] == '\n') && (at[size] == '\r' || at[size] == '\n')) seen = TRUE;
         if (seen) continue;
-        if (!firstTime || newHome) {
+        if (patch->carriesJson && !newHome) {
+            CarryOver(patch);
+            changed = TRUE;
+        } else if (!firstTime || newHome) {
             patch->wanted = FALSE;
             changed = TRUE;
         }
