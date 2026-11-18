@@ -106,14 +106,34 @@ patches/hide-something/
 
 A patch's files include each other from its top folder, like `#include "resolve/resolve.h"`.
 
+What several patches find in Aside the same way is in `patches/shared`, which isn't a patch. They include it as
+`#include "shared/browser.h"`, so a rule that stops matching a new build is fixed in one place. It's headers only, since a patch
+compiles every `.c` file in its folder. Installing a patch from GitHub fetches `patches/shared` too, and a change there needs the
+version of every patch that includes it raised. See [patches/shared](patches/shared/README.md).
+
 Each patch here explains itself:
 
 - [bookmark-folder-appearance](patches/bookmark-folder-appearance/README.md)
 - [sidebar-tweaks](patches/sidebar-tweaks/README.md)
+- [sidebar-fullscreen](patches/sidebar-fullscreen/README.md)
 - [window-tweaks](patches/window-tweaks/README.md)
+- [square-corners](patches/square-corners/README.md)
+- [fullscreen-gap](patches/fullscreen-gap/README.md)
 - [window-glass](patches/window-glass/README.md)
 - [chats](patches/chats/README.md)
 - [ask-aside](patches/ask-aside/README.md)
+
+Small patches are better than big ones. A patch that can't find something in a new build of Aside refuses as a whole, so a
+part that still works shouldn't wait on one that doesn't.
+
+A patch split out of another says so, and the first time it's there it takes over what it used to be:
+
+```json
+"carries": {"from": "window-tweaks", "switch": "fullscreen.gap", "default": true, "options": ["edge.width"]}
+```
+
+It's on if `from` was on with its `switch` on, `default` being that switch's default, and the listed options keep their values
+under the same keys.
 
 Add `"restart": true` to `patch.json` if a patch can only work from startup. Settings then
 says it applies the next time Aside starts.
@@ -170,6 +190,7 @@ Patches run inside the browser with no limits. What the SDK adds:
 | `RunOnUiThread` | Run something on the browser's UI thread |
 | `Lookup*` | Find classes, strings, functions, method slots and how views hide, by what stays the same |
 | `hold.h` | Keep a view hidden, remember what Aside asked for, and hand that back when turned off |
+| `LookupRemember` | Keep what a patch worked out about this build under a name, so another patch gets it with `LookupRecall` |
 
 Hooks stack, so patches can share a method and come off in any order. Two patches can't edit
 the same bytes: the second one's edit is refused.
