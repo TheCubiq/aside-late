@@ -1,0 +1,14 @@
+{
+  "id": "sidebar-fullscreen",
+  "version": "1.0.0",
+  "sdk": 1,
+  "title": "Sidebar in fullscreen",
+  "description": "Reveal a collapsed sidebar from the window's edge in fullscreen too.",
+  "tested": ["1.0.1022.1"],
+  "carries": {"from": "sidebar-tweaks", "switch": "edge.fullscreen", "default": false, "options": ["edge.width", "delay.enter", "delay.leave"]},
+  "options": [
+    {"key": "edge.width", "type": "slider", "title": "Edge width", "default": 8, "min": 1, "max": 64, "unit": "px"},
+    {"key": "delay.enter", "type": "slider", "title": "Delay on enter", "default": 100, "min": 0, "max": 1000, "step": 10, "unit": "ms"},
+    {"key": "delay.leave", "type": "slider", "title": "Delay on leave", "default": 500, "min": 0, "max": 2000, "step": 10, "unit": "ms"}
+  ]
+}
