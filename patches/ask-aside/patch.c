@@ -82,15 +82,25 @@ static DWORD FindOwnField(const Lookup *lookup, const RUNTIME_FUNCTION *update) 
     return 0;
 }
 
-static BOOL StoresField(const Lookup *lookup, const RUNTIME_FUNCTION *fn, DWORD field) {
+// mov [reg+field],any, through the register numbered `base`, counting r8 to r15 as 8 to 15.
+static BOOL StoresField(const Lookup *lookup, const RUNTIME_FUNCTION *fn, DWORD field, int base) {
     for (DWORD rva = fn->BeginAddress; rva + 7 <= fn->EndAddress; rva++) {
         const BYTE *p = lookup->base + rva;
-        if ((p[0] & 0xf0) == 0x40 && p[1] == 0x89 && (p[2] & 0xc0) == 0x80 && *(const DWORD *)(p + 3) == field) return TRUE;
+        if ((p[0] & 0xf0) != 0x40 || p[1] != 0x89 || (p[2] & 0xc0) != 0x80 || (p[2] & 7) == 4 || *(const DWORD *)(p + 3) != field) continue;
+        if (((p[0] & 1) << 3 | (p[2] & 7)) == base) return TRUE;
     }
     return FALSE;
 }
 
-// The constructor is the one caller of the update function that also sets that field.
+// mov rcx,reg just before a call: which register the call is made on, or -1.
+static int CalledOn(const BYTE *call) {
+    const BYTE *p = call - 3;
+    if ((p[0] != 0x48 && p[0] != 0x4c) || p[1] != 0x89 || (p[2] & 0xc7) != 0xc1) return -1;
+    return (p[0] & 4) << 1 | (p[2] >> 3 & 7);
+}
+
+// The constructor is the one caller of the update function that calls it on an object it also sets that field of. Others
+// call it on buttons that already exist.
 static DWORD FindButtonClass(const Lookup *lookup, const RUNTIME_FUNCTION *update) {
     DWORD field = FindOwnField(lookup, update);
     if (!field) return 0;
@@ -100,7 +110,8 @@ static DWORD FindButtonClass(const Lookup *lookup, const RUNTIME_FUNCTION *updat
         const BYTE *p = lookup->base + rva;
         if (p[0] != 0xe8 || rva + 5 + *(const INT32 *)(p + 1) != update->BeginAddress) continue;
         const RUNTIME_FUNCTION *fn = LookupFunction(lookup, rva);
-        if (!fn || fn == last || !StoresField(lookup, fn, field)) continue;
+        int on = CalledOn(p);
+        if (!fn || fn == last || on < 0 || !StoresField(lookup, fn, field, on)) continue;
         last = fn;
         DWORD vtable = LookupVtableInstalledBy(lookup, fn);
         if (!vtable) continue;
