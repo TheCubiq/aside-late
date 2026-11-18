@@ -2,13 +2,23 @@
 
 #include "resolve/rules.h"
 
-// The Background's rect and color, written in this order right after it's allocated:
-// mov [rax+20h..2Ch],<int>; mov [rax+8],<color>
+// The Background's insets and color, written in this order right after it's allocated: mov [rax+N..N+0Ch],<int>; mov [rax+8],<color>
+// N was 20h, and is 24h since a flag went in at 20h.
 static BOOL IsRoundedBackgroundStores(const BYTE *p) {
-    static const BYTE insets[] = {0x20, 0x24, 0x28, 0x2c};
+    BYTE first = p[2];
+    if (first != 0x20 && first != 0x24) return FALSE;
     for (int i = 0; i < 4; i++)
-        if (p[i * 3] != 0x89 || (p[i * 3 + 1] & 0xc7) != 0x40 || p[i * 3 + 2] != insets[i]) return FALSE;
+        if (p[i * 3] != 0x89 || (p[i * 3 + 1] & 0xc7) != 0x40 || p[i * 3 + 2] != first + i * 4) return FALSE;
     return (p[12] & 0xf8) == 0x48 && p[13] == 0x89 && (p[14] & 0xc7) == 0x40 && p[15] == 0x08;
+}
+
+// It also stores the radii it was given, all four at once: movups [rax+10h],xmm. Another factory makes the same class with none.
+static BOOL StoresRadii(const Lookup *lookup, const RUNTIME_FUNCTION *fn) {
+    for (DWORD rva = fn->BeginAddress; rva + 4 <= fn->EndAddress; rva++) {
+        const BYTE *p = lookup->base + rva;
+        if (p[0] == 0x0f && p[1] == 0x11 && (p[2] & 0xc7) == 0x40 && p[3] == 0x10) return TRUE;
+    }
+    return FALSE;
 }
 
 DWORD FindRoundedBackground(const Lookup *lookup) {
@@ -16,9 +26,9 @@ DWORD FindRoundedBackground(const Lookup *lookup) {
     DWORD found = 0;
     for (DWORD rva = start; rva < end; rva++) {
         const BYTE *p = lookup->base + rva;
-        if (p[0] != 0x89 || p[2] != 0x20 || !IsRoundedBackgroundStores(p)) continue;
+        if (p[0] != 0x89 || !IsRoundedBackgroundStores(p)) continue;
         const RUNTIME_FUNCTION *fn = LookupFunction(lookup, rva);
-        if (!fn) continue;
+        if (!fn || !StoresRadii(lookup, fn)) continue;
         if (found && found != fn->BeginAddress) return 0;
         found = fn->BeginAddress;
     }
@@ -135,32 +145,43 @@ const char *ResolveViewSize(const Lookup *lookup, Bindings *bindings) {
 
     int votes[MAX_SLOTS] = {0}, best = 0;
     DWORD start = lookup->text->VirtualAddress, end = start + lookup->text->Misc.VirtualSize - 40;
+    DWORD rdata = lookup->rdata->VirtualAddress, rdataEnd = rdata + lookup->rdata->Misc.VirtualSize;
     for (DWORD rva = start; rva < end; rva++) {
         const BYTE *p = lookup->base + rva;
-        if (p[0] != 0x80 || (p[1] & 0xf8) != 0xb8 || *(const DWORD *)(p + 2) != has || p[6] != 1 || p[7] != 0x0f || p[8] != 0x84) continue;
-        // mov rax,[view] and the method, and then the bounds, each possibly with something else between.
-        for (DWORD at = rva + 13; at < rva + 20; at++) {
+        if (p[0] != 0x80 || (p[1] & 0xf8) != 0xb8 || *(const DWORD *)(p + 2) != has || p[6] != 1) continue;
+        if (p[7] != 0x74 && (p[7] != 0x0f || p[8] != 0x84)) continue;
+        // mov rax,[reg+method], and then the bounds in r8 or rdx, each possibly with something else between.
+        for (DWORD at = rva + 9; at < rva + 28; at++) {
             const BYTE *q = lookup->base + at;
-            if ((q[0] != 0x48 && q[0] != 0x4c) || q[1] != 0x8b || (q[2] & 0xc7) != 0x80) continue;
-            DWORD offset = *(const DWORD *)(q + 3);
-            DWORD bounds = FindBytes(lookup, at + 7, at + 16, "\x4c\x8d\x05", 3);
+            if ((q[0] != 0x48 && q[0] != 0x4c) || q[1] != 0x8b || (q[2] & 0xc0) != 0x80 || (q[2] & 7) == 4) continue;
+            DWORD offset = *(const DWORD *)(q + 3), bounds = 0;
+            for (DWORD b = at + 7; b < at + 20 && !bounds; b++) {
+                const BYTE *l = lookup->base + b;
+                if ((l[0] == 0x4c && l[1] == 0x8d && l[2] == 0x05) || (l[0] == 0x48 && l[1] == 0x8d && l[2] == 0x15)) bounds = b;
+            }
             if (!bounds || offset % 8 || offset / 8 >= MAX_SLOTS) break;
-            if (++votes[offset / 8] > best) {
+            DWORD unbounded = bounds + 7 + *(const INT32 *)(lookup->base + bounds + 3);
+            votes[offset / 8]++;
+            // The bounds with no limits are a constant. Some callers pass bounds they work out instead.
+            if (unbounded >= rdata && unbounded < rdataEnd && votes[offset / 8] >= best) {
                 best = votes[offset / 8];
                 bindings->calculateSizeSlot = offset / 8;
-                bindings->unboundedSize = bounds + 7 + *(const INT32 *)(lookup->base + bounds + 3);
+                bindings->unboundedSize = unbounded;
             }
             break;
         }
     }
-    return best >= 8 ? NULL : "View::CalculatePreferredSize";
+    if (bindings->unboundedSize) best = votes[bindings->calculateSizeSlot];
+    return best >= 3 ? NULL : "View::CalculatePreferredSize";
 }
 
 // lea rdx,[key]; lea r8,["kMarginsKey"]; lea r9,[deleter]; mov rcx,rsi; call SetPropertyInternal, in the function that
 // shows the row's close button, on the row's own property list: lea rsi,[rax+properties]
 const char *ResolveMargins(const Lookup *lookup, const RUNTIME_FUNCTION *fn, Bindings *bindings) {
     static const char name[] = "kMarginsKey";
-    for (DWORD at = fn->BeginAddress; at + 24 <= fn->EndAddress; at++) {
+    // Aside now checks the margins first and sets them through a wrapper, but the row's functions next to it still call
+    // SetPropertyInternal itself, so those count too.
+    for (DWORD at = fn->BeginAddress - 0x2000; at + 24 <= fn->EndAddress + 0x2000; at++) {
         const BYTE *p = lookup->base + at;
         if (memcmp(p, "\x48\x8d\x15", 3) || memcmp(p + 7, "\x4c\x8d\x05", 3) || memcmp(p + 14, "\x4c\x8d\x0d", 3) || !IsCall(p + 24)) continue;
         DWORD text = at + 14 + *(const INT32 *)(p + 10);
@@ -169,10 +190,20 @@ const char *ResolveMargins(const Lookup *lookup, const RUNTIME_FUNCTION *fn, Bin
         bindings->marginsName = text;
         bindings->marginsDeleter = at + 21 + *(const INT32 *)(p + 17);
         bindings->setProperty = CallTarget(at + 24, p + 24);
-        DWORD list = FindBytes(lookup, fn->BeginAddress, at, "\x48\x8d\xb0", 3);
-        if (!list) return "a view's properties";
-        bindings->propertiesOffset = *(const DWORD *)(lookup->base + list + 3);
-        return NULL;
+        // The list is what's in rcx for the call, from lea reg,[view+properties] before it. It was rsi and is rbx.
+        const BYTE *move = p + 21;
+        if ((move[0] & 0xfa) != 0x48 || move[1] != 0x89 || (move[2] & 0xc7) != 0xc1) return "a view's properties";
+        int reg = (move[2] >> 3 & 7) | (move[0] & 4 ? 8 : 0);
+        const RUNTIME_FUNCTION *site = LookupFunction(lookup, at);
+        if (!site) continue;
+        for (DWORD back = at; back > site->BeginAddress && back + 0x400 > at; back--) {
+            const BYTE *q = lookup->base + back;
+            if ((q[0] & 0xfa) != 0x48 || q[1] != 0x8d || (q[2] & 0xc0) != 0x80 || (q[2] & 7) == 4) continue;
+            if (((q[2] >> 3 & 7) | (q[0] & 4 ? 8 : 0)) != reg) continue;
+            bindings->propertiesOffset = *(const DWORD *)(q + 3);
+            return NULL;
+        }
+        return "a view's properties";
     }
     return "kMarginsKey";
 }

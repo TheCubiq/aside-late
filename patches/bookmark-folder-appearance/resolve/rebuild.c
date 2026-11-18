@@ -40,12 +40,16 @@ static void ResolveRebuildGuard(const Lookup *lookup, Bindings *bindings) {
 static void ResolveUnload(const Lookup *lookup, const RUNTIME_FUNCTION *build, Bindings *bindings) {
     BYTE type[7] = {0x83, 0xba};
     memcpy(type + 2, &bindings->nodeTypeOffset, 4);
+    // Each row's callbacks: lea rax,[method]; mov [cb+20h],rax; mov dword [cb+28h],0, through whichever registers. The
+    // one that unloads a tab looks at the node's type early on.
     for (DWORD at = build->BeginAddress; at + 22 <= build->EndAddress; at++) {
         const BYTE *p = lookup->base + at;
-        if (memcmp(p, "\x48\x8d\x05", 3) || memcmp(p + 7, "\x48\x89\x41\x20\xc7\x41\x28", 7) || memcmp(p + 18, "\x48\x89\x59\x30", 4)) continue;
+        if (memcmp(p, "\x48\x8d\x05", 3) || (p[7] & 0xfe) != 0x48 || p[8] != 0x89 || (p[9] & 0xf8) != 0x40 || (p[9] & 7) == 4 || p[10] != 0x20) continue;
         DWORD method = at + 7 + *(const INT32 *)(p + 3);
-        if (FindBytes(lookup, method, method + 0x30, type, sizeof type)) bindings->unloadTab = method;
-        return;
+        if (FindBytes(lookup, method, method + 0x30, type, sizeof type)) {
+            bindings->unloadTab = method;
+            return;
+        }
     }
 }
 
@@ -99,12 +103,19 @@ static void ResolveDragMove(const Lookup *lookup, const RUNTIME_FUNCTION *build,
 // cmp byte [rbx+has],1; jne; mov rdx,[rbx+active]; mov rcx,r12; call
 // The list in order starts: movaps [rsp+x],xmm9; mov qword [rsp+y],0; mov rcx,rbx; mov rdx,r12; lea r8,[rsp+x]
 static void ResolveActiveOrder(const Lookup *lookup, const RUNTIME_FUNCTION *build, Bindings *bindings) {
-    for (DWORD at = build->BeginAddress; at + 24 <= build->EndAddress; at++) {
+    // The owner was in rbx and is in r13, which takes a REX prefix: cmp byte [owner+x],1; jne; mov rdx,[owner+y]; mov rcx,r12; call
+    for (DWORD at = build->BeginAddress; at + 26 <= build->EndAddress; at++) {
         const BYTE *p = lookup->base + at;
-        if (memcmp(p, "\x80\xbb", 2) || p[6] != 1 || p[7] != 0x75 || memcmp(p + 9, "\x48\x8b\x93", 3) || memcmp(p + 16, "\x4c\x89\xe1\xe8", 4)) continue;
+        int rex = p[0] == 0x41, owner = rex ? 0x8 | (p[2] & 7) : p[1] & 7;
+        const BYTE *c = p + rex;
+        if (c[0] != 0x80 || (c[1] & 0xf8) != 0xb8 || (c[1] & 7) == 4 || c[6] != 1 || c[7] != 0x75) continue;
+        const BYTE *d = c + 9;
+        if (d[0] != (rex ? 0x49 : 0x48) || d[1] != 0x8b || d[2] != (0x90 | (owner & 7)) || memcmp(d + 7, "\x4c\x89\xe1\xe8", 4)) continue;
         for (DWORD skip = at; skip + 34 <= build->EndAddress && skip < at + 0x400; skip++) {
             const BYTE *q = lookup->base + skip;
-            if (memcmp(q, "\x44\x0f\x29\x8c\x24", 5) || memcmp(q + 9, "\x48\xc7\x84\x24", 4) || memcmp(q + 21, "\x48\x89\xd9\x4c\x89\xe2\x4c\x8d\x84\x24", 10)) continue;
+            // movaps [rsp+x],xmm9; mov qword [rsp+y],0; mov rcx,owner; mov rdx,r12; lea r8,[rsp+x]
+            BYTE ownerToRcx[3] = {owner & 8 ? 0x4c : 0x48, 0x89, 0xc1 | (owner & 7) << 3};
+            if (memcmp(q, "\x44\x0f\x29\x8c\x24", 5) || memcmp(q + 9, "\x48\xc7\x84\x24", 4) || memcmp(q + 21, ownerToRcx, 3) || memcmp(q + 24, "\x4c\x89\xe2\x4c\x8d\x84\x24", 7)) continue;
             bindings->activeOrderSite = at;
             bindings->activeOrderSkip = skip;
             return;
@@ -133,7 +144,9 @@ const char *ResolveExpanded(const Lookup *lookup, Bindings *bindings) {
     if (!bindings->animatorOffset) return "what animates the rows";
     for (DWORD at = build->BeginAddress; at + 14 <= build->EndAddress; at++) {
         const BYTE *p = lookup->base + at;
-        if (memcmp(p, "\x48\x8b\x93", 3) || memcmp(p + 7, "\x4c\x8b\x83", 3)) continue;
+        // Through any register: it was rbx and is r13.
+        if ((p[0] & 0xfe) != 0x48 || p[1] != 0x8b || (p[2] & 0xf8) != 0x90 || (p[2] & 7) == 4) continue;
+        if (p[7] != (0x4c | (p[0] & 1)) || p[8] != 0x8b || p[9] != (0x80 | (p[2] & 7))) continue;
         if (*(const DWORD *)(p + 10) != *(const DWORD *)(p + 3) + 8) continue;
         bindings->expandedOffset = *(const DWORD *)(p + 3);
         ResolveRebuild(lookup, build, bindings);

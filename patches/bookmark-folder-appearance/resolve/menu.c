@@ -62,8 +62,17 @@ static const char *ResolveRightClick(const Lookup *lookup, Bindings *bindings) {
     if (!bindings->menuClosed) return "the menu's close callback";
 
     // movsd xmm6,[rax+location], rounded by two calls and then converted to the screen.
-    if (!(at = FindBytes(lookup, at, end, "\xf2\x0f\x10\xb0", 4))) return "the event's location";
-    bindings->eventLocationOffset = *(const DWORD *)(lookup->base + at + 4);
+    // The event can be in any register: movsd xmm6,[reg+location], with a REX prefix for r8 to r15.
+    for (; at + 9 <= end; at++) {
+        const BYTE *p = lookup->base + at;
+        if (p[0] != 0xf2) continue;
+        int rex = (p[1] & 0xf0) == 0x40;
+        if (rex && (p[1] & 0x0c)) continue;
+        if (p[1 + rex] != 0x0f || p[2 + rex] != 0x10 || (p[3 + rex] & 0xf8) != 0xb0 || (p[3 + rex] & 7) == 4) continue;
+        bindings->eventLocationOffset = *(const DWORD *)(p + 4 + rex);
+        break;
+    }
+    if (at + 9 > end) return "the event's location";
     DWORD ignored;
     if (!NextCall(lookup, &at, end, &ignored) || !NextCall(lookup, &at, end, &ignored) || !NextCall(lookup, &at, end, &bindings->convertToScreen))
         return "ConvertPointToScreen";
@@ -74,11 +83,21 @@ static const char *ResolveRightClick(const Lookup *lookup, Bindings *bindings) {
     return NULL;
 }
 
-// lea rax,[low]; movq xmm0,rax ... lea rax,[high]; movq xmmN,rax; punpcklqdq xmmN,xmm0, for every pair in a run.
+// lea rax,[low]; movq xmm0,rax ... lea rax,[high]; movq xmmN,rax; punpcklqdq xmmN,xmm0, for every pair in a run. The
+// compiler can put an unrelated instruction or two between pairs, so a pair can start a little further on.
+static BOOL IsVtablePair(const BYTE *p) {
+    return p[0] == 0x48 && p[1] == 0x8d && p[2] == 0x05 && p[7] == 0x66 && p[8] == 0x48 && p[9] == 0x0f && p[10] == 0x6e && p[11] == 0xc0 &&
+           p[12] == 0x48 && p[13] == 0x8d && p[14] == 0x05 &&
+           p[19] == 0x66 && p[21] == 0x0f && p[22] == 0x6e;
+}
+
 static void ReadVtablePairs(const Lookup *lookup, DWORD rva, DWORD pairs[16][2]) {
     while (TRUE) {
+        DWORD skip = 0;
+        while (skip <= 16 && !IsVtablePair(lookup->base + rva + skip)) skip++;
+        if (skip > 16) return;
+        rva += skip;
         const BYTE *p = lookup->base + rva;
-        if (memcmp(p, "\x48\x8d\x05", 3) || memcmp(p + 7, "\x66\x48\x0f\x6e\xc0", 5) || memcmp(p + 12, "\x48\x8d\x05", 3) || p[19] != 0x66 || p[21] != 0x0f || p[22] != 0x6e) return;
         int reg = ((p[23] >> 3) & 7) + (p[20] == 0x4c ? 8 : 0);
         pairs[reg][0] = rva + 12 + 7 + *(const INT32 *)(p + 15);
         pairs[reg][1] = rva + 7 + *(const INT32 *)(p + 3);
@@ -86,32 +105,70 @@ static void ReadVtablePairs(const Lookup *lookup, DWORD rva, DWORD pairs[16][2])
     }
 }
 
-// After the button's constructor the color button writes its vtables through r14, ending at its own fields:
-// movdqu [r14+x],xmmN | lea rax,[vtable]; mov [r14+x],rax | mov [r14+id],esi
-static const char *ReadColorVtables(const Lookup *lookup, DWORD rva, DWORD pairs[16][2], Bindings *bindings) {
+// The memory operand after an opcode, when it's [base+disp] with no index. `rex` gives the high bits of the register and
+// the base, numbered 0 to 15. Returns how many bytes it takes, or 0 for any other form.
+static int BaseOperand(const BYTE *p, BYTE rex, int *base, int *reg, DWORD *disp) {
+    int mode = p[0] >> 6, rm = p[0] & 7, size = 1;
+    if (mode == 3) return 0;
+    *reg = (p[0] >> 3 & 7) | (rex & 4 ? 8 : 0);
+    if (rm == 4) {
+        if ((p[1] >> 3 & 7) != 4) return 0;  // An index.
+        rm = p[1] & 7;
+        size = 2;
+    }
+    if (mode == 0 && rm == 5) return 0;  // No base.
+    *base = rm | (rex & 1 ? 8 : 0);
+    *disp = mode == 0 ? 0 : mode == 1 ? (DWORD)(INT8)p[size] : *(const DWORD *)(p + size);
+    return size + (mode == 0 ? 0 : mode == 1 ? 1 : 4);
+}
+
+// mov byte [base+x],imm8 (41 c6 with r8 to r15). The instruction's size, or 0.
+static int ByteStore(const BYTE *p, int base, DWORD *disp, BYTE *value) {
+    int at, reg, size;
+    if ((p[0] & 0xf0) != 0x40 || p[1] != 0xc6 || !(size = BaseOperand(p + 2, p[0], &at, &reg, disp)) || at != base || reg & 7) return 0;
+    *value = p[2 + size];
+    return 3 + size;
+}
+
+// After the button's constructor the color button writes its vtables through one register, ending at its own fields:
+// movdqu [reg+x],xmmN | lea rax,[vtable]; mov [reg+x],rax | mov [reg+id],r32; mov rax,[rsp+x]; mov [reg+callback],rax;
+// mov byte [reg+selected],0. That register was r14 and is r12, which takes a SIB byte, so the operands are decoded.
+static const char *ReadColorVtables(const Lookup *lookup, DWORD rva, DWORD pairs[16][2], Bindings *bindings, int *button) {
     bindings->colorVtableCount = 0;
+    *button = -1;
     for (int limit = 0; limit < 16; limit++) {
         const BYTE *p = lookup->base + rva;
-        if (p[0] == 0xf3 && (p[1] & 0xfb) == 0x41 && p[2] == 0x0f && p[3] == 0x7f && (p[4] & 7) == 6) {
-            int reg = ((p[4] >> 3) & 7) + (p[1] == 0x45 ? 8 : 0), mode = p[4] >> 6;
-            DWORD offset = mode == 0 ? 0 : mode == 1 ? p[5] : *(const DWORD *)(p + 5);
-            if (!pairs[reg][0] || bindings->colorVtableCount > 14) return "the color button's vtables";
+        int base, reg, size;
+        DWORD offset;
+        if (p[0] == 0xf3 && (p[1] & 0xf0) == 0x40 && p[2] == 0x0f && p[3] == 0x7f && (size = BaseOperand(p + 4, p[1], &base, &reg, &offset))) {
+            if ((*button >= 0 && base != *button) || !pairs[reg][0] || bindings->colorVtableCount > 14) return "the color button's vtables";
+            *button = base;
             bindings->colorVtables[bindings->colorVtableCount].offset = offset;
             bindings->colorVtables[bindings->colorVtableCount++].vtable = pairs[reg][0];
             bindings->colorVtables[bindings->colorVtableCount].offset = offset + 8;
             bindings->colorVtables[bindings->colorVtableCount++].vtable = pairs[reg][1];
-            rva += mode == 0 ? 5 : mode == 1 ? 6 : 9;
-        } else if (!memcmp(p, "\x48\x8d\x05", 3) && p[7] == 0x49 && p[8] == 0x89 && (p[9] == 0x46 || p[9] == 0x86)) {
-            if (bindings->colorVtableCount > 15) return "the color button's vtables";
+            rva += 4 + size;
+        } else if (p[0] == 0x48 && p[1] == 0x8d && p[2] == 0x05 && (p[7] & 0xf0) == 0x40 && p[8] == 0x89 && (size = BaseOperand(p + 9, p[7], &base, &reg, &offset))) {
+            if ((*button >= 0 && base != *button) || reg || bindings->colorVtableCount > 15) return "the color button's vtables";
+            *button = base;
             bindings->colorVtables[bindings->colorVtableCount].vtable = rva + 7 + *(const INT32 *)(p + 3);
-            bindings->colorVtables[bindings->colorVtableCount++].offset = p[9] == 0x46 ? p[10] : *(const DWORD *)(p + 10);
-            rva += p[9] == 0x46 ? 11 : 14;
-        } else if (!memcmp(p, "\x41\x89\xb6", 3)) {
-            bindings->colorIdOffset = *(const DWORD *)(p + 3);
-            // mov rax,[rsp+x]; mov [r14+callback],rax; mov byte [r14+selected],0
-            if (memcmp(p + 7, "\x48\x8b\x44\x24", 4) || memcmp(p + 12, "\x49\x89\x86", 3) || memcmp(p + 19, "\x41\xc6\x86", 3)) return "the color button's fields";
-            bindings->colorCallbackOffset = *(const DWORD *)(p + 15);
-            bindings->colorSelectedOffset = *(const DWORD *)(p + 22);
+            bindings->colorVtables[bindings->colorVtableCount++].offset = offset;
+            rva += 9 + size;
+        } else if ((p[0] & 0xf8) == 0x48 && p[1] == 0x8d && (size = BaseOperand(p + 2, p[0], &base, &reg, &offset)) && base == *button) {
+            rva += 2 + size;  // lea reg,[button+x], for later.
+        } else if ((p[0] & 0xf8) == 0x40 && p[1] == 0x89 && (size = BaseOperand(p + 2, p[0], &base, &reg, &offset)) && base == *button) {
+            bindings->colorIdOffset = offset;
+            const BYTE *q = p + 2 + size;
+            BYTE value;
+            // mov rax,[rsp+x]
+            if (q[0] != 0x48 || q[1] != 0x8b || q[2] != 0x44 || q[3] != 0x24) return "the color button's fields";
+            q += 5;
+            // mov [reg+callback],rax
+            if ((q[0] & 0xf0) != 0x40 || q[1] != 0x89 || !(size = BaseOperand(q + 2, q[0], &base, &reg, &offset)) || base != *button || reg) return "the color button's fields";
+            bindings->colorCallbackOffset = offset;
+            q += 2 + size;
+            if (!ByteStore(q, *button, &offset, &value) || value) return "the color button's fields";
+            bindings->colorSelectedOffset = offset;
             return NULL;
         } else {
             return "the color button's vtables";
@@ -146,7 +203,8 @@ static const char *ResolveColorButton(const Lookup *lookup, const RUNTIME_FUNCTI
         for (DWORD call = begin; call + 5 <= end; call++) {
             const BYTE *q = lookup->base + call;
             if (!IsCall(q) || CallTarget(call, q) != bindings->buttonConstruct) continue;
-            const char *missing = ReadColorVtables(lookup, call + 5, pairs, bindings);
+            int button;
+            const char *missing = ReadColorVtables(lookup, call + 5, pairs, bindings, &button);
             if (missing) return missing;
             for (DWORD back = call; back > call - 0x100; back--) {
                 const BYTE *b = lookup->base + back;
@@ -154,17 +212,34 @@ static const char *ResolveColorButton(const Lookup *lookup, const RUNTIME_FUNCTI
                 bindings->colorSize = *(const DWORD *)(b + 1);
                 break;
             }
-            DWORD after = call + 5;
-            if (!FindBytes(lookup, after, after + 0x80, "\x41\xc6\x86", 3)) return "the color button's fields";
-            after = FindBytes(lookup, after, after + 0x80, "\x41\xc6\x86", 3) + 8;
+            // Past mov byte [button+selected],0 come its preferred size and its focus.
+            DWORD after = call + 5, offset;
+            BYTE value;
+            int size = 0;
+            for (; after < call + 0x100 && !(size = ByteStore(lookup->base + after, button, &offset, &value)); after++);
+            if (!size) return "the color button's fields";
+            after += size;
             if (!NextCall(lookup, &after, end, &bindings->setPreferredSize) || !NextCall(lookup, &after, end, &bindings->setFocusable)) return "the color button's setup";
-            // mov byte [r14+flag],1 once, in the branch that first compares it.
-            DWORD flag = FindBytes(lookup, after, after + 0x40, "\x41\xc6\x86", 3);
-            if (!flag || lookup->base[flag + 7] != 1) return "the color button's flag";
-            bindings->colorFlagOffset = *(const DWORD *)(lookup->base + flag + 3);
-            DWORD ink = FindBytes(lookup, flag, flag + 0x40, "\x49\xc7\x86", 3);
+            // A flag it sets once, in the branch that first compares it: cmp byte [button+flag],0
+            DWORD flag = 0;
+            for (DWORD at = after; at < after + 0x40 && !flag; at++) {
+                const BYTE *p = lookup->base + at;
+                int base, reg, length;
+                if ((p[0] & 0xf0) != 0x40 || p[1] != 0x80 || !(length = BaseOperand(p + 2, p[0], &base, &reg, &offset)) || base != button || (reg & 7) != 7 || p[2 + length]) continue;
+                bindings->colorFlagOffset = offset;
+                flag = at;
+            }
+            if (!flag) return "the color button's flag";
+            // Then its ink drop is cleared: mov qword [button+ink],0
+            DWORD ink = 0;
+            for (DWORD at = flag; at < flag + 0x40 && !ink; at++) {
+                const BYTE *p = lookup->base + at;
+                int base, reg, length;
+                if ((p[0] & 0xf8) != 0x48 || p[1] != 0xc7 || !(length = BaseOperand(p + 2, p[0], &base, &reg, &offset)) || base != button || (reg & 7) || *(const DWORD *)(p + 2 + length)) continue;
+                bindings->colorInkOffset = offset;
+                ink = at;
+            }
             if (!ink) return "the color button's ink drop";
-            bindings->colorInkOffset = *(const DWORD *)(lookup->base + ink + 3);
             break;
         }
         if (!bindings->colorSize || !bindings->colorIdOffset) return "the color button";
@@ -381,9 +456,20 @@ static void ResolveNewFolder(const Lookup *lookup, Bindings *bindings) {
     const Reference *sites = LookupCode(lookup, strings[0], &count);
     const RUNTIME_FUNCTION *fn = count == 1 ? LookupFunction(lookup, sites[0].site) : NULL;
     if (!fn) return;
-    DWORD at = sites[0].site, calls[8];
-    for (int i = 0; i < 8; i++)
-        if (!NextCall(lookup, &at, fn->EndAddress, &calls[i])) return;
+    // Show is the call given no flags: xor r9d,r9d just before it. AddFolder comes right before, ~EditDetails right after.
+    // Counting calls doesn't work, since whether operator new counts as one depends on the build.
+    DWORD at = sites[0].site, calls[12], show = 0;
+    int count_ = 0;
+    while (count_ < 12 && NextCall(lookup, &at, fn->EndAddress, &calls[count_])) {
+        const BYTE *call = lookup->base + at - 5;
+        if (count_ >= 1 && call[-3] == 0x45 && call[-2] == 0x31 && call[-1] == 0xc9) {
+            show = calls[count_];
+            break;
+        }
+        count_++;
+    }
+    if (!show || !NextCall(lookup, &at, fn->EndAddress, &calls[count_ + 1])) return;
+    DWORD addFolder = calls[count_ - 1], detailsDestroy = calls[count_ + 1];
     // lea rcx,[function]; mov [rax+8|10h|18h],rcx
     DWORD found[3] = {0};
     for (DWORD rva = sites[0].site; rva + 11 <= fn->EndAddress && !found[2]; rva++) {
@@ -394,7 +480,6 @@ static void ResolveNewFolder(const Lookup *lookup, Bindings *bindings) {
     if (!found[0] || !found[1] || !found[2]) return;
 
     // A caller of Show gets the window from a browser: mov rax,[rax+window] ... mov rcx,[rax]; mov rdx,[rcx+native]; mov rcx,rax; mov rax,rdx
-    DWORD show = calls[6];
     DWORD start = lookup->text->VirtualAddress, end = start + lookup->text->Misc.VirtualSize - 8;
     int windowSlot = 0, nativeSlot = 0, profileSlot = 0;
     for (DWORD rva = start; rva < end && !profileSlot; rva++) {
@@ -437,8 +522,8 @@ static void ResolveNewFolder(const Lookup *lookup, Bindings *bindings) {
     bindings->editorCallbackInvoke = found[0];
     bindings->editorCallbackDestroy = found[1];
     bindings->editorCallbackQuery = found[2];
-    bindings->editorAddFolder = calls[5];
-    bindings->editorDetailsDestroy = calls[7];
+    bindings->editorAddFolder = addFolder;
+    bindings->editorDetailsDestroy = detailsDestroy;
     // A folder's children are listed right after its parent, as learned from the live node, and Aside reads them at +40h.
     bindings->nodeChildrenOffset = 0x40;
     bindings->editorShow = show;
