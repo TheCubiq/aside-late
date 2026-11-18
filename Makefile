@@ -4,7 +4,9 @@ SHELL := cmd.exe
 
 BUILD ?= build
 CFLAGS := -O2 -Wall -Wextra -static -Isrc/sdk -D_WIN32_WINNT=0x0A00
-PATCHES := $(notdir $(wildcard patches/*))
+# A patch is a folder with a patch.json. patches/shared holds lookups several of them include as "shared/...".
+PATCHES := $(patsubst patches/%/patch.json,%,$(wildcard patches/*/patch.json))
+SHARED := $(wildcard patches/shared/*)
 SDK_HEADERS := $(wildcard src/sdk/*.h)
 # Everything under a folder, however deep.
 rwildcard = $(wildcard $(1)/*) $(foreach folder,$(wildcard $(1)/*/),$(call rwildcard,$(folder:/=)))
@@ -28,11 +30,11 @@ $(BUILD)/sdk/%.h: src/sdk/%.h | $(BUILD)/sdk
 	copy /Y $(subst /,\,$<) $(subst /,\,$@) >NUL
 
 define PATCH_RULES
-$(BUILD)/patches/$(1)/patch.dll: $(call rwildcard,patches/$(1)) $(SDK_HEADERS) $(BUILD)/aside-late-mod.dll
+$(BUILD)/patches/$(1)/patch.dll: $(call rwildcard,patches/$(1)) $(SHARED) $(SDK_HEADERS) $(BUILD)/aside-late-mod.dll
 	@if not exist $(subst /,\,$(BUILD)/patches/$(1)) mkdir $(subst /,\,$(BUILD)/patches/$(1))
 	copy /Y $(subst /,\,patches/$(1)/patch.json $(BUILD)/patches/$(1)/patch.json) >NUL
 	$(call MoveAside,$(BUILD)/patches/$(1)/patch.dll)
-	gcc $(CFLAGS) -Ipatches/$(1) -shared -o $$@ $(filter %.c,$(call rwildcard,patches/$(1))) $(BUILD)/aside-late-mod.dll
+	gcc $(CFLAGS) -Ipatches/$(1) -Ipatches -shared -o $$@ $(filter %.c,$(call rwildcard,patches/$(1))) $(BUILD)/aside-late-mod.dll
 endef
 $(foreach patch,$(PATCHES),$(eval $(call PATCH_RULES,$(patch))))
 

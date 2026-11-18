@@ -29,6 +29,12 @@ for path in git("diff", "--name-only", base, head, "--", "patches/").splitlines(
     if not path.endswith(".md"):
         changed.add(path.split("/")[1])
 
+# patches/shared isn't a patch. A change there changes every patch that includes it.
+if "shared" in changed:
+    changed.discard("shared")
+    users = git("grep", "-l", '#include "shared/', head, "--", "patches/") or ""
+    changed.update(line.split(":", 1)[1].split("/")[1] for line in users.splitlines() if ":" in line)
+
 problems = []
 for patch in sorted(changed):
     now = manifest(head, patch)

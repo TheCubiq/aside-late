@@ -6,7 +6,7 @@ window see through, like the sidebar, under black or white, with the theme, at t
 | File | What's in it |
 | --- | --- |
 | `patch.c` | The backdrop, and the colour over it |
-| `resolve.c` | Finding the browser's view and how it paints, by the same rules as window-tweaks |
+| `resolve.c` | Finding the browser's view and how it paints, through `shared/browser.h` and `shared/canvas.h` |
 
 ## How it works
 

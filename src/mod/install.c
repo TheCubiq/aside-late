@@ -158,7 +158,10 @@ static const char *JsonValue(const char *at, const char *end, const char *key, c
     return close;
 }
 
-// Everything under patches/<id>/ at that commit goes into its source folder.
+// Everything under patches/<id>/ at that commit goes into its source folder, and patches/shared/, which patches include as
+// "shared/...", into a shared folder in it.
+#define SHARED_PREFIX "patches/shared/"
+
 static BOOL DownloadSource(const char *repo, const char *id, const char *sha, const wchar_t *folder, char *error, size_t errorSize) {
     char api[256], raw[256], url[2600], owner[128], name[128];
     ApiBase(api, sizeof api);
@@ -184,20 +187,22 @@ static BOOL DownloadSource(const char *repo, const char *id, const char *sha, co
         const char *close = strchr(at, '}');
         char type[16] = "";
         JsonValue(at, close, "type", type, sizeof type);
-        if (strcmp(type, "blob") || strncmp(path, prefix, prefixSize)) continue;
+        BOOL own = !strncmp(path, prefix, prefixSize), shared = !strncmp(path, SHARED_PREFIX, sizeof SHARED_PREFIX - 1);
+        if (strcmp(type, "blob") || (!own && !shared)) continue;
         if (strstr(path, "..") || strchr(path, '\\') || strchr(path, ':')) {
             snprintf(error, errorSize, "%s has an unsafe file name", path);
             ok = FALSE;
             break;
         }
         wchar_t target[PATH_SIZE];
-        swprintf(target, PATH_SIZE, L"%ls\\%hs", folder, path + prefixSize);
+        if (own) swprintf(target, PATH_SIZE, L"%ls\\%hs", folder, path + prefixSize);
+        else swprintf(target, PATH_SIZE, L"%ls\\shared\\%hs", folder, path + sizeof SHARED_PREFIX - 1);
         for (wchar_t *c = target; *c; c++)
             if (*c == L'/') *c = L'\\';
         MakeFoldersFor(target);
         snprintf(url, sizeof url, "%s/%s/%s/%s/%s", raw, owner, name, sha, path);
         ok = HttpGet(url, target, NULL, error, errorSize);
-        files++;
+        files += own;
     }
     free(tree.data);
     if (ok && !files) {

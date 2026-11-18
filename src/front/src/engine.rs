@@ -437,7 +437,8 @@ fn build(paths: &Paths, status: &Shared, cancel: &AtomicBool, from: f32, span: f
 
     let mut patches = Vec::new();
     let patches_root = source.join("patches");
-    let mut names: Vec<_> = fs::read_dir(&patches_root).map_err(describe)?.flatten().filter(|entry| entry.path().is_dir()).filter_map(|entry| entry.file_name().into_string().ok()).collect();
+    // A patch is a folder with a patch.json. patches/shared holds what several of them include as "shared/...".
+    let mut names: Vec<_> = fs::read_dir(&patches_root).map_err(describe)?.flatten().filter(|entry| entry.path().join("patch.json").is_file()).filter_map(|entry| entry.file_name().into_string().ok()).collect();
     names.sort();
     for name in &names {
         let folder = app.join("patches").join(name);
@@ -446,6 +447,7 @@ fn build(paths: &Paths, status: &Shared, cancel: &AtomicBool, from: f32, span: f
         files_in(&patches_root.join(name), "c", true, &source, &mut c_files);
         let mut arguments = args(FLAGS);
         arguments.push(format!("-Ipatches/{name}").into());
+        arguments.push("-Ipatches".into());
         arguments.extend(args(["-shared", "-o"]));
         arguments.push(folder.join("patch.dll").into());
         arguments.extend(c_files.drain(..).map(OsString::from));

@@ -1,6 +1,6 @@
 {
   "id": "window-glass",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "sdk": 1,
   "title": "Window glass",
   "description": "Make the window glass like Windows Terminal: what's behind it shows through blurred, under black or white at the opacity you set.",
