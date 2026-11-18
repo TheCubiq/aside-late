@@ -1,0 +1,9 @@
+{
+  "id": "square-corners",
+  "version": "1.0.0",
+  "sdk": 1,
+  "title": "Square corners beside the sidebar",
+  "description": "Square the page's corners where it meets the sidebar, and the top bar's upper corners.",
+  "tested": ["1.0.1022.1"],
+  "carries": {"from": "window-tweaks", "switch": "corners.square", "default": false}
+}

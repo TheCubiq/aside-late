@@ -1,5 +1,4 @@
-// Changes the browser window's layout: the gap around it in fullscreen, the top bar, the inset around the page and its
-// corners. Aside lays everything out in BrowserView::Layout, so this moves what that left, straight after it.
+// Changes the browser window's layout: the top bar, and the inset around the page. Aside lays everything out in BrowserView::Layout, so this moves what that left, straight after it.
 
 #include "resolve.h"
 
@@ -8,12 +7,6 @@
 #define MAX_WINDOWS 32
 #define WIDGET_CLASS "Chrome_WidgetWin_"
 #define TICK_MS 16
-#define FRAME_EVERY_TICKS 15
-#define DWMWA_BORDER 34
-#define DWMWA_CORNERS 33
-#define BORDER_NONE 0xfffffffe
-#define BORDER_DEFAULT 0xffffffff
-#define CORNERS_SQUARE 1
 #define REVEAL_PIXELS 4
 #define HIDE_DELAY_MS 300
 #define MOTION_MS 180
@@ -40,14 +33,6 @@ typedef void (*CanvasConcat)(void *paint, const float *matrix);
 typedef void (*ClipRect)(void *canvas, const ViewRect *rect, int operation);
 typedef void (*ApplyRadii)(void *view, const Radii *radii);
 typedef void (*ClearRadii)(void *view);
-typedef HRESULT (WINAPI *DwmGetAttribute)(HWND window, DWORD attribute, void *value, DWORD size);
-typedef HRESULT (WINAPI *DwmSetAttribute)(HWND window, DWORD attribute, const void *value, DWORD size);
-
-// A window whose frame this has changed, and its corners before that.
-typedef struct {
-    HWND window;
-    DWORD corners;
-} Framed;
 
 typedef struct {
     BYTE *view;
@@ -72,13 +57,9 @@ static Paint OriginalFramePaint, OriginalTopBackground;
 static BOOL PaintingBar;
 static Window Windows[MAX_WINDOWS];
 static int WindowCount;
-static Framed FramedWindows[MAX_WINDOWS];
-static int FramedCount;
-static DwmGetAttribute GetFrame;
-static DwmSetAttribute SetFrame;
 static UINT_PTR Timer;
 static DWORD ChildrenOffset;
-static BOOL Enabled, TopRadiusEdited;
+static BOOL Enabled;
 
 typedef enum { REVEAL_OVER, REVEAL_PUSH, REVEAL_UNCOVER } Reveal;
 
@@ -91,17 +72,12 @@ typedef struct {
 static FadedClass FadedClasses[MAX_FADED_CLASSES], TintedClasses[MAX_FADED_CLASSES];
 static int FadedClassCount, TintedClassCount;
 
-static BOOL CloseGap = TRUE, CollapseTop, SquareCorners, BarTakesInset = TRUE, SidebarSideTakesInset = TRUE;
+static BOOL CollapseTop, BarTakesInset = TRUE, SidebarSideTakesInset = TRUE;
 static Reveal RevealStyle;
 static int Inset;
 
 static BOOL Uncovers(void) {
     return CollapseTop && RevealStyle == REVEAL_UNCOVER;
-}
-
-// The inset's own corners are round, so there's nothing to square.
-static BOOL SquaresCorners(void) {
-    return SquareCorners && !Inset;
 }
 
 static void **ChildrenOf(const BYTE *view, size_t *count) {
@@ -154,45 +130,28 @@ static BOOL LearnChildren(const BYTE *browser) {
     return FALSE;
 }
 
-// A page that's inset or has no bar over it is a card, round all the way around. Beside the sidebar it can be square, and
-// below a bar that's always there it's square at the top. Each container has what Aside just gave it, to take the radius from.
+// A page that's inset or has no bar over it is a card, round all the way around, and below a bar that's always there it's
+// square at the top. Each container has what Aside just gave it, to take the radius from. A page squared beside the sidebar,
+// by Square corners, keeps that side square when it isn't inset.
 static void ApplyPageCorners(const Window *window) {
-    if (!Inset && !CollapseTop && !SquaresCorners()) return;
+    if (!Inset && !CollapseTop) return;
     ViewRect full = BoundsOf(window->view), page = window->contentsRect;
-    BOOL onLeft = page.x > 0, onRight = page.x + page.width < full.width;
+    BOOL gapLeft = page.x > 0, gapRight = page.x + page.width < full.width;
     BYTE *const *containers = *(BYTE *const *const *)(window->contents + Native.containersOffset);
     size_t count = *(const size_t *)(window->contents + Native.containersOffset + 8);
     for (size_t i = 0; i < count; i++) {
         BYTE *container = containers[i];
         Radii *radii = (Radii *)(container + Native.radiiOffset);
-        if (!Inset && !CollapseTop) {
-            if (onLeft != onRight) {
-                if (onLeft) radii->upperLeft = radii->lowerLeft = 0;
-                else radii->upperRight = radii->lowerRight = 0;
-            }
-        } else {
-            float radius = max(max(radii->upperLeft, radii->upperRight), max(radii->lowerRight, radii->lowerLeft));
-            float upper = CollapseTop ? radius : 0;
-            *radii = (Radii){upper, upper, radius, radius};
-            if (SquaresCorners() && onLeft != onRight) {
-                if (onLeft) radii->upperLeft = radii->lowerLeft = 0;
-                else radii->upperRight = radii->lowerRight = 0;
-            }
-        }
+        BOOL squared = !Inset && gapLeft != gapRight &&
+                       (gapLeft ? !radii->upperLeft && !radii->lowerLeft : !radii->upperRight && !radii->lowerRight);
+        float radius = max(max(radii->upperLeft, radii->upperRight), max(radii->lowerRight, radii->lowerLeft));
+        float upper = CollapseTop ? radius : 0;
+        *radii = (Radii){upper, upper, radius, radius};
+        if (squared && gapLeft) radii->upperLeft = radii->lowerLeft = 0;
+        else if (squared) radii->upperRight = radii->lowerRight = 0;
         if (container[Native.radiiSetOffset]) ((ApplyRadii)(Base + Native.applyRadii))(container, radii);
         else ((ClearRadii)(Base + Native.clearRadii))(container);
     }
-}
-
-// The top bar's corners are in the layout's own code, so its two stores of the upper radius store the zero beside them instead.
-static void ApplyTopCorners(void) {
-    static const BYTE zero[] = {0xf3, 0x41, 0x0f, 0x11, 0x00, 0xf3, 0x41, 0x0f, 0x11, 0x40, 0x04};
-    static const BYTE radius[] = {0xf3, 0x45, 0x0f, 0x11, 0x38, 0xf3, 0x45, 0x0f, 0x11, 0x78, 0x04};
-    BOOL square = SquaresCorners();
-    if (!Native.topRadiusSite || TopRadiusEdited == square) return;
-    BYTE *site = Base + Native.topRadiusSite;
-    if (EditCode(site, square ? radius : zero, square ? zero : radius, sizeof zero)) TopRadiusEdited = square;
-    else ModLog("window-tweaks couldn't square the top bar's corners");
 }
 
 // The window's buttons sit beside the browser's view in its frame, and they're what else is there.
@@ -366,52 +325,8 @@ static void UpdateReveal(Window *window) {
     PlaceWindow(window);
 }
 
-static BOOL IsFullscreen(HWND window) {
-    RECT rect;
-    MONITORINFO monitor = {.cbSize = sizeof monitor};
-    if ((GetWindowLongW(window, GWL_STYLE) & WS_CAPTION) == WS_CAPTION || !GetWindowRect(window, &rect)) return FALSE;
-    if (!GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor)) return FALSE;
-    return EqualRect(&rect, &monitor.rcMonitor);
-}
-
-static void RestoreFrame(int index) {
-    const Framed *framed = &FramedWindows[index];
-    if (IsWindow(framed->window)) {
-        static const DWORD border = BORDER_DEFAULT;
-        SetFrame(framed->window, DWMWA_BORDER, &border, sizeof border);
-        SetFrame(framed->window, DWMWA_CORNERS, &framed->corners, sizeof framed->corners);
-    }
-    FramedWindows[index] = FramedWindows[--FramedCount];
-}
-
-// Windows 11 draws a thin border around a window, and goes on drawing it around one that fills the screen. It's mostly see
-// through, so it looks like a gap in front of the desktop. Rounded corners cut the last few pixels off the same way.
-static BOOL CALLBACK UpdateFrame(HWND window, LPARAM unused) {
-    (void)unused;
-    char name[32];
-    if (!IsWindowVisible(window) || GetWindow(window, GW_OWNER) || !GetClassNameA(window, name, sizeof name) || strncmp(name, WIDGET_CLASS, sizeof WIDGET_CLASS - 1)) return TRUE;
-    int found = -1;
-    for (int i = 0; i < FramedCount && found < 0; i++)
-        if (FramedWindows[i].window == window) found = i;
-    BOOL wanted = CloseGap && IsFullscreen(window);
-    if (wanted == (found >= 0)) return TRUE;
-    if (!wanted) {
-        RestoreFrame(found);
-        return TRUE;
-    }
-    Framed framed = {.window = window};
-    if (FramedCount == MAX_WINDOWS || FAILED(GetFrame(window, DWMWA_CORNERS, &framed.corners, sizeof framed.corners))) return TRUE;
-    static const DWORD none = BORDER_NONE, square = CORNERS_SQUARE;
-    SetFrame(window, DWMWA_BORDER, &none, sizeof none);
-    SetFrame(window, DWMWA_CORNERS, &square, sizeof square);
-    FramedWindows[FramedCount++] = framed;
-    return TRUE;
-}
-
 static void CALLBACK Tick(HWND hwnd, UINT message, UINT_PTR timer, DWORD time) {
     (void)hwnd, (void)message, (void)timer, (void)time;
-    static int ticks;
-    if (GetFrame && !(++ticks % FRAME_EVERY_TICKS)) EnumThreadWindows(GetCurrentThreadId(), UpdateFrame, 0);
     for (int i = 0; i < WindowCount; i++) {
         if (!IsLive(&Windows[i])) {
             Windows[i--] = Windows[--WindowCount];
@@ -701,16 +616,13 @@ static void LayOutAll(void) {
 
 PATCH_OPTION() {
     BOOL on = !strcmp(value, "true");
-    if (!strcmp(key, "fullscreen.gap")) CloseGap = on;
-    else if (!strcmp(key, "top.collapse")) CollapseTop = on;
+    if (!strcmp(key, "top.collapse")) CollapseTop = on;
     else if (!strcmp(key, "top.reveal")) RevealStyle = !strcmp(value, "push") ? REVEAL_PUSH : !strcmp(value, "uncover") ? REVEAL_UNCOVER : REVEAL_OVER;
     else if (!strcmp(key, "top.inset")) BarTakesInset = on;
     else if (!strcmp(key, "inset.sidebar")) SidebarSideTakesInset = on;
     else if (!strcmp(key, "inset")) Inset = atoi(value);
-    else if (!strcmp(key, "corners.square")) SquareCorners = on;
     if (!Enabled) return;
     for (int i = 0; i < WindowCount; i++) Windows[i].sidebarHeader = 0;
-    ApplyTopCorners();
     LayOutAll();
 }
 
@@ -724,13 +636,7 @@ PATCH_ENABLE() {
         ModLog("window-tweaks couldn't hook the browser's layout");
         return;
     }
-    HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
-    GetFrame = dwm ? (DwmGetAttribute)(void *)GetProcAddress(dwm, "DwmGetWindowAttribute") : NULL;
-    SetFrame = dwm ? (DwmSetAttribute)(void *)GetProcAddress(dwm, "DwmSetWindowAttribute") : NULL;
-    if (!SetFrame) GetFrame = NULL;
     Enabled = TRUE;
-    TopRadiusEdited = FALSE;
-    ApplyTopCorners();
     LayOutAll();
     ModLog("window-tweaks ready: layout slot %d, radii +%#lx, set +%#lx", Native.layoutSlot, Native.radiiOffset, Native.radiiSetOffset);
 }
@@ -746,7 +652,6 @@ PATCH_DISABLE() {
     Timer = 0;
     OriginalPageLayout = OriginalContentsLayout = OriginalTopLayout = OriginalHolderLayout = OriginalSidebarLayout = NULL;
     OriginalFramePaint = NULL;
-    while (FramedCount) RestoreFrame(0);
     FadedClassCount = TintedClassCount = 0;
     WindowCount = 0;
     // The hook's gone, so this puts everything back where Aside wants it.

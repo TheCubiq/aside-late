@@ -1,0 +1,9 @@
+{
+  "id": "fullscreen-gap",
+  "version": "1.0.0",
+  "sdk": 1,
+  "title": "Close the fullscreen gap",
+  "description": "Take away the thin see-through border and rounded corners Windows leaves around a fullscreen window.",
+  "tested": ["1.0.1022.1", "1.0.1116.2"],
+  "carries": {"from": "window-tweaks", "switch": "fullscreen.gap", "default": true}
+}

@@ -16,7 +16,6 @@ typedef struct {
     // What it does with a page container's corners.
     DWORD radiiOffset, radiiSetOffset;
     DWORD applyRadii, clearRadii;
-    DWORD topRadiusSite;     // Where the top bar's corners are set. 0 if this build differs.
     // How a view paints, and how a canvas is moved for that.
     int paintSlot, paintBackgroundSlot;
     DWORD canvasPaintOffset, clipRect;
