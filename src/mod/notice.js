@@ -1,7 +1,8 @@
 // A card in the corner of the new tab page when there's a newer Aside Late: Update fetches it in the background, then Restart
 // Aside brings it in with the same windows and tabs. Later puts the card away for that version, and Settings still has it.
+// Set to download on their own, updates come in with no card, and Mods offers the restart.
 
-import { download, findUpdate, percent, restart, updateState } from "./updates.js";
+import { download, findUpdate, percent, restart, updateMode, updateState } from "./updates.js";
 
 const DISMISSED_KEY = "asideLate.dismissed";
 const POLL_MS = 400;
@@ -135,6 +136,11 @@ async function poll() {
 async function start() {
   update = await findUpdate();
   if (!update) return;
+  if (updateMode() === "auto") {
+    const now = await updateState();
+    if (now.version !== update.version || now.state === "idle") download(update);
+    return;
+  }
   await poll();
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) poll();

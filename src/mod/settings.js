@@ -1,7 +1,7 @@
 // Adds Patched stuff to Aside's settings by working with the page as it's drawn. It relies on
 // the page's structure and its CSS classes, not its code, so a new build at worst looks plainer.
 
-import { download, findUpdate, percent, restart, updateState } from "./updates.js";
+import { MODES, download, findUpdate, percent, restart, setUpdateMode, updateMode, updateState } from "./updates.js";
 
 const HOME = "/aside-late";
 const NAV = "nav.flex.flex-col.gap-3";
@@ -1044,6 +1044,13 @@ function aboutPage() {
       row("Browser version", browserVersion || "Unknown"),
       row("Settings version", chrome?.runtime?.getManifest?.().version ?? "Unknown"),
       row("Aside Late version", lateVersion || "Unknown"),
+      row("Updates", "What happens when a newer Aside Late is out.", makeSelect({ title: "Updates", choices: MODES }, updateMode(), mode => {
+        setUpdateMode(mode);
+        findUpdate().then(found => {
+          lateUpdate = found;
+          if (mode === "auto" && found && lateState.state === "idle") download(found);
+        });
+      })),
       row("Made with aside-late", "These community mods are independent of Aside.")),
   ];
 }

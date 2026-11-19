@@ -3,6 +3,30 @@
 
 const HOME = "/aside-late";
 const CACHE_KEY = "asideLate.release";
+const MODE_KEY = "asideLate.updates";
+export const MODES = [
+  { value: "ask", title: "Ask first" },
+  { value: "auto", title: "Download automatically" },
+  { value: "off", title: "Don't check" },
+];
+
+// What to do about a newer version: say so, fetch it without asking, or not look at all. Pages of the extension share it.
+export function updateMode() {
+  try {
+    const mode = localStorage.getItem(MODE_KEY);
+    return MODES.some(entry => entry.value === mode) ? mode : "ask";
+  } catch {
+    return "ask";
+  }
+}
+
+export function setUpdateMode(mode) {
+  try {
+    localStorage.setItem(MODE_KEY, mode);
+  } catch {
+    // Without storage it stays as it was.
+  }
+}
 // GitHub only answers so many questions an hour without an account, and every new tab would ask.
 const LOOK_EVERY_MS = 6 * 60 * 60 * 1000;
 
@@ -69,7 +93,7 @@ async function newestRelease(late, github) {
 // The newer version, or null. Offline or rate limited, it's null too, and asks again later.
 export async function findUpdate() {
   const [late, github] = await Promise.all([read("late.json"), read("github.json")]);
-  if (!/^\d/.test(late.version)) return null;
+  if (!/^\d/.test(late.version) || updateMode() === "off") return null;
   let saved = remembered();
   if (!saved || saved.from !== late.version) {
     try {
