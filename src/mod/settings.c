@@ -10,11 +10,20 @@
 __asm__(".section .rdata,\"dr\"\n.Lscript:\n.incbin \"src/mod/settings.js\"\n.Lscript_end:\n.text");
 // The thank-you page the launcher opens once, at /aside-late/hello.html, and the hand it sends to GitHub and X.
 __asm__(".section .rdata,\"dr\"\n.Lhello_page:\n.incbin \"src/mod/hello.html\"\n.Lhello_page_end:\n.Lhello_script:\n.incbin \"src/mod/hello.js\"\n.Lhello_script_end:\n.Lhand_script:\n.incbin \"src/mod/hand.js\"\n.Lhand_script_end:\n.text");
+// The new tab page's notice of a newer Aside Late, and what it shares with the settings page to look for one.
+__asm__(".section .rdata,\"dr\"\n.Lnotice_script:\n.incbin \"src/mod/notice.js\"\n.Lnotice_script_end:\n.Lupdates_script:\n.incbin \"src/mod/updates.js\"\n.Lupdates_script_end:\n.text");
 
 static const wchar_t Extension[] = L"\\AsideAgentManager\\";
 static const wchar_t Folder[] = L"\\aside-late\\";
-static const wchar_t Page[] = L"\\main.html";
-static const char Tag[] = "<script type=\"module\" src=\"/aside-late/settings.js\"></script>";
+typedef struct {
+    const wchar_t *file;
+    const char *tag;
+} Page;
+
+static const Page Pages[] = {
+    {L"\\main.html", "<script type=\"module\" src=\"/aside-late/settings.js\"></script>"},
+    {L"\\newtab.html", "<script type=\"module\" src=\"/aside-late/notice.js\"></script>"},
+};
 
 typedef struct {
     HANDLE file;
@@ -98,6 +107,10 @@ static void RunRequest(const wchar_t *request) {
         QueueRebuild(parts[1]);
     } else if (count == 3 && !strcmp(parts[0], "remove") && IsName(parts[1])) {
         QueueRemove(parts[1]);
+    } else if (count == 4 && !strcmp(parts[0], "update") && IsName(parts[1]) && IsName(parts[2])) {
+        UpdateDownload(parts[1], parts[2]);
+    } else if (count == 2 && !strcmp(parts[0], "restart")) {
+        UpdateRestart();
     } else if (count == 4 && !strcmp(parts[0], "repo") && IsName(parts[2])) {
         if ((tilde = strchr(parts[2], '~'))) *tilde = '/';
         ChangeRepos(parts[2], !strcmp(parts[1], "add"));
@@ -115,13 +128,17 @@ static void SaveGithubAddresses(void) {
     WriteWhole(path, text, size);
 }
 
-// A copy of main.html with the script added, kept per version of the extension.
-static BOOL PrepareMainPage(const wchar_t *original, wchar_t *out) {
-    const wchar_t *end = original + wcslen(original) - wcslen(Page), *start = end;
+// A copy of the page with its script added, kept per version of the extension and of the script tag.
+static BOOL PreparePage(const Page *page, const wchar_t *original, wchar_t *out) {
+    const wchar_t *end = original + wcslen(original) - wcslen(page->file), *start = end;
     while (start > original && start[-1] != L'\\') start--;
+    unsigned tagHash = 2166136261u;
+    for (const char *c = page->tag; *c; c++) tagHash = (tagHash ^ (BYTE)*c) * 16777619u;
+    const wchar_t *pageName = page->file + 1;
     wchar_t name[MAX_PATH];
-    swprintf(name, MAX_PATH, L"web\\main-%.*ls.html", (int)(end - start), start);
+    swprintf(name, MAX_PATH, L"web\\%.*ls-%.*ls-%08x.html", (int)wcscspn(pageName, L"."), pageName, (int)(end - start), start, tagHash);
     HomePath(out, name);
+    const char *Tag = page->tag;
 
     EnterCriticalSection(&Lock);
     BOOL ready = GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES;
@@ -141,7 +158,7 @@ static BOOL PrepareMainPage(const wchar_t *original, wchar_t *out) {
                         fputs(head, copy) >= 0;
                 if (fclose(copy)) ready = FALSE;
             }
-            if (!ready) ModLog("couldn't prepare main.html");
+            if (!ready) ModLog("couldn't prepare %ls", pageName);
         }
         free(html);
         fclose(file);
@@ -162,7 +179,7 @@ static const wchar_t *Redirect(const wchar_t *path, wchar_t *out, wchar_t *clean
     if (folder) {
         const wchar_t *request = folder + wcslen(Folder);
         if (wcsstr(request, L"..")) return path;
-        if (!wcsncmp(request, L"set\\", 4) || !wcsncmp(request, L"install\\", 8) || !wcsncmp(request, L"rebuild\\", 8) || !wcsncmp(request, L"remove\\", 7) || !wcsncmp(request, L"repo\\", 5) || !wcsncmp(request, L"option\\", 7) || !wcsncmp(request, L"reset\\", 6)) {
+        if (!wcsncmp(request, L"update\\", 7) || !wcsncmp(request, L"restart\\", 8) || !wcsncmp(request, L"set\\", 4) || !wcsncmp(request, L"install\\", 8) || !wcsncmp(request, L"rebuild\\", 8) || !wcsncmp(request, L"remove\\", 7) || !wcsncmp(request, L"repo\\", 5) || !wcsncmp(request, L"option\\", 7) || !wcsncmp(request, L"reset\\", 6)) {
             RunRequest(request);
             HomePath(out, L"web\\ok.txt");
         } else if (PublishedPath(request, out)) {
@@ -177,8 +194,11 @@ static const wchar_t *Redirect(const wchar_t *path, wchar_t *out, wchar_t *clean
         }
         return out;
     }
-    size_t length = wcslen(clean), page = wcslen(Page);
-    if (length > page && !_wcsicmp(clean + length - page, Page) && PrepareMainPage(clean, out)) return out;
+    size_t length = wcslen(clean);
+    for (size_t i = 0; i < sizeof Pages / sizeof *Pages; i++) {
+        size_t size = wcslen(Pages[i].file);
+        if (length > size && !_wcsicmp(clean + length - size, Pages[i].file)) return PreparePage(&Pages[i], clean, out) ? out : path;
+    }
     return path;
 }
 
@@ -296,6 +316,15 @@ void SettingsStart(BYTE *base) {
     __asm__("leaq .Lhand_script_end(%%rip), %0" : "=r"(hand_end));
     HomePath(path, L"web\\hand.js");
     WriteWhole(path, hand, hand_end - hand);
+    const char *notice, *notice_end, *updates, *updates_end;
+    __asm__("leaq .Lnotice_script(%%rip), %0" : "=r"(notice));
+    __asm__("leaq .Lnotice_script_end(%%rip), %0" : "=r"(notice_end));
+    __asm__("leaq .Lupdates_script(%%rip), %0" : "=r"(updates));
+    __asm__("leaq .Lupdates_script_end(%%rip), %0" : "=r"(updates_end));
+    HomePath(path, L"web\\notice.js");
+    WriteWhole(path, notice, notice_end - notice);
+    HomePath(path, L"web\\updates.js");
+    WriteWhole(path, updates, updates_end - updates);
     SaveBrowserVersion(base);
     SaveGithubAddresses();
     if (!wrote) {

@@ -1,6 +1,8 @@
 // Adds Patched stuff to Aside's settings by working with the page as it's drawn. It relies on
 // the page's structure and its CSS classes, not its code, so a new build at worst looks plainer.
 
+import { download, findUpdate, percent, restart, updateState } from "./updates.js";
+
 const HOME = "/aside-late";
 const NAV = "nav.flex.flex-col.gap-3";
 const GROUP_ID = "aside-late-nav";
@@ -34,6 +36,9 @@ let dragging = false;
 let glassMap = "";
 const switches = new Map();
 let optionsPopup = null;  // { patchId, controls, close }.
+let lateUpdate = null;    // A newer Aside Late, from findUpdate.
+let lateState = { state: "idle" };
+let lateVersion = "";
 let optionsSending = 0;
 
 function make(tag, className, ...children) {
@@ -79,6 +84,9 @@ async function load() {
   ]);
   browserVersion = version.trim();
   github = addresses;
+  lateVersion = (await read("late.json").then(response => response.json()).catch(() => ({}))).version ?? "";
+  lateUpdate = await findUpdate().catch(() => null);
+  lateState = await updateState();
 }
 
 // What's in a repo, straight from GitHub. Only the page's own session keeps it.
@@ -112,13 +120,14 @@ async function loadCatalog() {
 // The mod works in the background, and other tabs can change things too. The page follows along quickly
 // while something's happening, and slowly the rest of the time.
 function isBusy() {
-  return (installing && !installing.failed) || patches.some(patch => patch.status);
+  return (installing && !installing.failed) || patches.some(patch => patch.status) || ["downloading", "restarting"].includes(lateState.state);
 }
 
 async function poll() {
   pollTimer = 0;
   try {
     await loadPatches();
+    lateState = await updateState();
     if (installing && !installing.failed) {
       const text = await read("install.txt").then(response => response.text()).catch(() => "");
       const [id, state, message] = text.split("\t");
@@ -985,9 +994,42 @@ function addRepoRow() {
   return row("Add a repo", "A GitHub repo with a patches folder.", controls);
 }
 
+// A newer Aside Late, at the top of the page until it's in.
+function updateSection() {
+  if (!lateUpdate) return null;
+  const ours = lateState.version === lateUpdate.version;
+  const get = () => download(lateUpdate).then(followNow);
+  let title = `Aside Late ${lateUpdate.version} is out`, text = `You have ${lateUpdate.current}.`, control;
+  if (ours && lateState.state === "downloading") {
+    const done = percent(lateState);
+    title = `Downloading Aside Late ${lateUpdate.version}`;
+    text = done === null ? "In the background." : `${done}%`;
+  } else if (ours && lateState.state === "restarting") {
+    title = "Restarting Aside…";
+    text = "";
+  } else if (ours && lateState.state === "ready") {
+    title = `Aside Late ${lateUpdate.version} is ready`;
+    text = "Restart Aside to use it. Your windows and tabs come back. Otherwise it's used the next time Aside starts.";
+    control = button(BUTTON_DEFAULT, "Restart Aside", () => restart().then(followNow));
+  } else if (ours && lateState.state === "failed") {
+    title = "Couldn't update Aside Late";
+    text = lateState.error;
+    control = button(BUTTON_DEFAULT, "Try again", get);
+  } else {
+    const notes = make("a", "underline underline-offset-2", "What's new");
+    notes.href = lateUpdate.notes;
+    notes.target = "_blank";
+    notes.rel = "noreferrer";
+    text = make("span", "", `You have ${lateUpdate.current}. `, notes);
+    control = button(BUTTON_DEFAULT, "Update", get);
+  }
+  return section("Aside Late", row(title, text, control));
+}
+
 function modsPage() {
   return [
     header("Mods"),
+    updateSection(),
     failure ? make("p", "text-destructive mb-4 text-sm", failure) : null,
     safeMode ? make("p", "text-muted-foreground mb-4 text-sm", "Aside crashed while starting last time, so mods are off for now. Turn back on the ones you want.") : null,
     section("Installed", ...patches.map(installedRow)),
@@ -1001,6 +1043,7 @@ function aboutPage() {
     section("Aside, with a few personal touches",
       row("Browser version", browserVersion || "Unknown"),
       row("Settings version", chrome?.runtime?.getManifest?.().version ?? "Unknown"),
+      row("Aside Late version", lateVersion || "Unknown"),
       row("Made with aside-late", "These community mods are independent of Aside.")),
   ];
 }
@@ -1024,7 +1067,7 @@ function render() {
 }
 
 function stateKey() {
-  return JSON.stringify([patches, safeMode, hasCompiler, installing, failure, repos, Object.keys(catalog), catalogLoading]);
+  return JSON.stringify([patches, safeMode, hasCompiler, installing, failure, repos, Object.keys(catalog), catalogLoading, lateUpdate, lateState]);
 }
 
 // The mods page is looked at again and again, and most of the time nothing's different.
