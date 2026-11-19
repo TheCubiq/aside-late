@@ -35,6 +35,17 @@ patch from a GitHub repo, or update one, so you never need it otherwise.
 
 Windows may warn about the download, since it isn't signed.
 
+### Updates
+
+When a newer Aside Late is out, a card in the corner of a new tab says so, and so does the top of **Mods**. **Update** downloads
+the release's exe in the background and checks it against the SHA-256 GitHub lists for it. It then replaces
+`%LOCALAPPDATA%\AsideLate\Aside Late.exe`, which shortcuts and pins start. **Restart Aside** restarts it the way Aside's own
+restart does, so windows and tabs come back, patched by the new version. Otherwise it's used the next time Aside starts from a
+shortcut or pin. **Later** hides the card for that version. GitHub is asked at most every 6 hours. Prereleases are only offered
+to someone already on one.
+
+An older copy of the exe, such as one left in Downloads, hands over to the newer kept copy instead of putting older patches back.
+
 ### From the command line
 
 After [building](#build), run:
@@ -56,6 +67,7 @@ installs one without a restart.
 | `--list` | List the patches |
 | `--without <id>` | Leave a patch out of this launch. Repeat it for more. `settings` removes the settings page |
 | `--exe <Aside.exe>` | Use another installation |
+| `--after <pid>` | Wait for that process to exit first. The mod passes it when Aside restarts itself |
 | `--scan <Aside.dll> ...` | Show whether each patch finds what it needs, without running anything |
 | `--shortcut [path]` | Make a shortcut to `aside-late.exe`, on the desktop unless a path is given. `--to`, `--arguments`, `--icon` and `--app-id` change what it starts, its icon and its taskbar ID |
 
@@ -284,7 +296,8 @@ This is later binding than offsets, not real name lookup like Dia's Objective-C 
 - C++ keeps few names, and many classes are only reachable through code. A rebuild can change
   that code's shape without the feature changing, and then a patch refuses until its rule is updated.
 - It runs on every launch, and opening Aside any other way gives you the normal browser. That
-  includes opening a link while it's closed, and Aside restarting itself after an update.
+  includes opening a link while it's closed. Aside restarting itself, after its own update or Aside Late's, goes through
+  Aside Late and comes back patched.
 - Patches found on startup add about 3 s to it. Turning one on later takes about the same, off
   the UI thread, the first time.
 - Windows swallows an exception in a timer callback, and a `CHECK` in Aside is one. A patch that calls Aside
