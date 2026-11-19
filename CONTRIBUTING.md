@@ -13,13 +13,13 @@ Keep it small, test it hard, show it working.
 
 ## Adding a patch
 
-A patch is one folder in `patches/`. [Patches](README.md#patches) in the README covers its files, the SDK and its options.
+A patch is one folder in `patches/`. [Writing patches](docs/writing-patches.md) covers its files, the SDK and its options.
 
 - Store no offsets. Find everything by name or shape in whatever build is loaded, and return what's missing from `PATCH_START` so the patch refuses and the others carry on.
 - Prefer classes and methods to code patterns. They're what survives a rebuild of Aside.
 - Turning it off has to put everything back, while the browser runs.
 - List the builds you ran it on under `tested` in `patch.json`.
-- Give it a `README.md` saying what it does and how it works, and link it from the root README.
+- Give it a `README.md` saying what it does and how it works, and add it to the table in the root README.
 
 ## Testing
 

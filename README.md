@@ -1,305 +1,120 @@
 # aside-late
 
-Late-bound patches for Aside on Windows x64. They change no file of Aside's on disk and store
-no offsets. Every launch, each patch finds what it needs in whatever build is loaded, and it
-can be switched on and off, or installed, while the browser runs.
+Small patches for [Aside](https://aside.com) on Windows that keep working when Aside updates.
 
-`aside/patcher` binds early: exact file offsets, pinned to one SHA-256 of `Aside.dll`.
-
-## Use
-
-Download `AsideLate-<version>.exe` from [Releases](https://github.com/TheCubiq/aside-late/releases) and run it. It's about
-9 MB, and holds everything below already compiled, as well as its source. Press **Patch Aside**. That takes seconds, downloads
-nothing and leaves a running Aside alone. Then press **Start Aside**, which asks before closing an Aside that's running.
-**Add to desktop** and **Add to Start menu** make a shortcut that starts Aside patched with no window of its own. If Aside is
-already running with the patches, the shortcut opens a new window in it.
-
-Aside started by that shortcut or by **Start Aside** shows on the taskbar as **Aside (patched)**, apart from plain Aside. Pin it
-from there and the pin starts it patched. Started any other way, Aside groups under its own icon as before.
-
-The shortcuts and pins start a copy of the program kept in `%LOCALAPPDATA%\AsideLate`. Patching with a newer version replaces
-that copy, so existing shortcuts and pins stay as they are.
-
-Opened again once Aside is patched, the window offers the same buttons, plus **Patch again** and **Build from source**. Both
-close a running Aside first, after asking.
-
-Patches start off. Turn on the ones you want in **Settings → Patched stuff → Mods**.
-
-The first start with the patches also opens a thank-you tab, once. It never comes back, and **nah, maybe later** or Esc closes
-it. Its hand follows a click on **Star** or **Follow** to GitHub or X and points at the real button there for a few seconds, and
-once both are clicked it waves goodbye. Delete `said-hello.txt` in `%LOCALAPPDATA%\AsideLate` to see it again.
-
-**Build from source instead** compiles it all on your machine. That downloads a 69 MB compiler, checked against a pinned hash and
-about 740 MB once unpacked, and takes about a minute after that. The same compiler is downloaded the first time you install a
-patch from a GitHub repo, or update one, so you never need it otherwise.
-
-Windows may warn about the download, since it isn't signed.
-
-### Updates
-
-When a newer Aside Late is out, a card in the corner of a new tab says so, and so does the top of **Mods**. **Update** downloads
-the release's exe in the background and checks it against the SHA-256 GitHub lists for it. It then replaces
-`%LOCALAPPDATA%\AsideLate\Aside Late.exe`, which shortcuts and pins start. **Restart Aside** restarts it the way Aside's own
-restart does, so windows and tabs come back, patched by the new version. Otherwise it's used the next time Aside starts from a
-shortcut or pin. **Later** hides the card for that version. **Patched stuff → About → Updates** can instead download them automatically, with no
-card, leaving **Restart Aside** in Mods, or stop looking. GitHub is asked at most every 6 hours. Prereleases are only offered
-to someone already on one.
-
-An older copy of the exe, such as one left in Downloads, hands over to the newer kept copy instead of putting older patches back.
-
-### From the command line
-
-After [building](#build), run:
-
-```powershell
-.\build\aside-late.exe
-```
-
-If Aside is already running on that profile, it asks whether to terminate it first,
-including one in the background with no windows open. Answer no and it leaves Aside alone
-and opens nothing. Terminating is a force-quit, so Aside may offer to restore your tabs.
-
-Then open **Settings → Patched stuff → Mods**. Switches apply straight away, in the browser
-that's running. **Get more** takes a GitHub repo as `owner/name`, lists its patches, and
-installs one without a restart.
-
-| Option | What it does |
-| --- | --- |
-| `--list` | List the patches |
-| `--without <id>` | Leave a patch out of this launch. Repeat it for more. `settings` removes the settings page |
-| `--exe <Aside.exe>` | Use another installation |
-| `--after <pid>` | Wait for that process to exit first. The mod passes it when Aside restarts itself |
-| `--scan <Aside.dll> ...` | Show whether each patch finds what it needs, without running anything |
-| `--shortcut [path]` | Make a shortcut to `aside-late.exe`, on the desktop unless a path is given. `--to`, `--arguments`, `--icon` and `--app-id` change what it starts, its icon and its taskbar ID |
-
-Anything else goes to Aside, such as `--user-data-dir=<path>`.
-
-To undo everything, quit the patched Aside and start it normally. Closing its windows may
-not be enough, because Aside can keep running in the background:
-
-```powershell
-Stop-Process -Name Aside
-```
-
-Everything aside-late keeps is in `%LOCALAPPDATA%\AsideLate`, including `mod.log`.
-
-## Build
-
-Needs MinGW-w64 `gcc`:
-
-```powershell
-make
-```
-
-This works while a patched Aside is running. That Aside keeps what it has loaded, and the next
-launch uses the new build.
-
-The window is in `src/front`, in Rust with [GPUI Kit](https://gpui-kit.com):
-
-```powershell
-cd src/front
-cargo build --release
-```
-
-This runs `make` as well, so it needs `make` and `gcc` too, and packs what that builds into the exe.
-Its options are `--launch`, to start straight away and close when done, and `--exe <Aside.exe>`. Anything else goes to Aside.
-A release comes from running the **Release** workflow by hand, and is named after the version in `src/front/Cargo.toml`.
+Unofficial and not affiliated with Aside. Windows x64.
 
 ## Patches
 
-A patch is a folder in `patches/`, here or in any GitHub repo. The ones here come compiled inside
-the exe. One from anywhere else is delivered as source, and compiled on your machine when you install it.
+Each patch changes one thing about Aside: it hides something you don't use, changes how something looks, or adds something
+Aside doesn't do.
 
-```text
-patches/hide-something/
-  patch.json    id, title, description, version, sdk, the builds it has been run on
-  patch.c       any number of .c files, in folders too
-  README.md     what it does and how it works
-```
+| Patch | What it changes |
+|---|---|
+| [Hide Ask Aside](patches/ask-aside/README.md) | Hides the Ask Aside toolbar button |
+| [Hide Chats](patches/chats/README.md) | Hides the Chats section of the sidebar |
+| [Bookmark folder appearance](patches/bookmark-folder-appearance/README.md) | Colors and icons for bookmark folders, from a right-click menu like the tab group one |
+| [Sidebar tweaks](patches/sidebar-tweaks/README.md) | Keeps a collapsed sidebar open while its menus are, reveals it from the window's edge, and sets how quickly it opens and closes |
+| [Sidebar in fullscreen](patches/sidebar-fullscreen/README.md) | Reveals a collapsed sidebar from the window's edge in fullscreen too |
+| [Window tweaks](patches/window-tweaks/README.md) | Collapses the top bar until it's hovered, and sets the inset around the page |
+| [Square corners beside the sidebar](patches/square-corners/README.md) | Squares the page's corners where it meets the sidebar |
+| [Close the fullscreen gap](patches/fullscreen-gap/README.md) | Takes away the see-through border Windows leaves around a fullscreen window |
+| [Window glass](patches/window-glass/README.md) | Makes the window frosted glass, with a background opacity slider like Windows Terminal's |
 
-A patch's files include each other from its top folder, like `#include "resolve/resolve.h"`.
+Patches start off. Turn them on and off in **Settings → Patched stuff → Mods**, where they change straight away. **Get more**
+there installs patches from any GitHub repo with a `patches` folder.
 
-What several patches find in Aside the same way is in `patches/shared`, which isn't a patch. They include it as
-`#include "shared/browser.h"`, so a rule that stops matching a new build is fixed in one place. It's headers only, since a patch
-compiles every `.c` file in its folder. Installing a patch from GitHub fetches `patches/shared` from the same repo too, and a
-change there needs the version of every patch that includes it raised. It's local to each repo: a patch elsewhere can copy
-these into its own repo's `patches/shared`, but can't use or add to this one. See [patches/shared](patches/shared/README.md).
+## Install
 
-Each patch here explains itself:
+1. Download `AsideLate-<version>.exe` from [Releases](https://github.com/TheCubiq/aside-late/releases) and run it.
+2. Press **Patch Aside**. It takes seconds and leaves a running Aside alone.
+3. Press **Start Aside**. It asks before closing an Aside that's running.
 
-- [bookmark-folder-appearance](patches/bookmark-folder-appearance/README.md)
-- [sidebar-tweaks](patches/sidebar-tweaks/README.md)
-- [sidebar-fullscreen](patches/sidebar-fullscreen/README.md)
-- [window-tweaks](patches/window-tweaks/README.md)
-- [square-corners](patches/square-corners/README.md)
-- [fullscreen-gap](patches/fullscreen-gap/README.md)
-- [window-glass](patches/window-glass/README.md)
-- [chats](patches/chats/README.md)
-- [ask-aside](patches/ask-aside/README.md)
+**Add to desktop** and **Add to Start menu** make a shortcut that starts Aside patched. Aside started that way shows on the
+taskbar as **Aside (patched)**, so pinning it there gives you a pin that starts it patched too.
 
-Small patches are better than big ones. A patch that can't find something in a new build of Aside refuses as a whole, so a
-part that still works shouldn't wait on one that doesn't.
+Windows SmartScreen may warn you, because the exe isn't signed.
 
-A patch split out of another says so, and the first time it's there it takes over what it used to be:
+## Updating
 
-```json
-"carries": {"from": "window-tweaks", "switch": "fullscreen.gap", "default": true, "options": ["edge.width"]}
-```
+When a newer Aside Late is out, a card on a new tab and the top of **Mods** offer **Update**. It downloads in the background,
+and **Restart Aside** brings back your windows and tabs, patched by the new version. Otherwise it's used the next time Aside
+starts from a shortcut or pin.
 
-It's on if `from` was on with its `switch` on, `default` being that switch's default, and the listed options keep their values
-under the same keys.
+Under **Patched stuff → About → Updates**, pick: ask first (the default), download automatically, or don't check.
 
-Add `"restart": true` to `patch.json` if a patch can only work from startup. Settings then
-says it applies the next time Aside starts.
+When Aside updates itself, the patches find what they need in the new build on their own. A patch that can't turns itself off
+and says so in **Mods** until it's fixed here, and the others carry on.
 
-### Versions
+## FAQ
 
-```json
-{ "id": "hide-something", "version": "1.2.0", "sdk": 1 }
-```
+<details>
+<summary><strong>Is it safe?</strong></summary>
 
-`version` is `x.y.z`, compared part by part. Mods offers **Update** when the version on the repo's default branch is higher than
-yours, so raise it when a change is ready, and until then nothing reaches anyone. Here, a check fails if a patch changes without
-that. A patch with no version is compared by commit instead, so any new commit in its repo offers an update.
+Nothing of Aside's on disk changes. The patches run inside Aside only while it's started through Aside Late, and only those you
+turn on. The exe is built by this repo's GitHub Actions from the code here, and updates are checked against the SHA-256 GitHub
+lists for them. It goes online only to check for updates, and to read a GitHub repo you install patches from. It sends nothing
+about you anywhere.
 
-`sdk` is the `ASIDE_LATE_SDK` the patch was written for, from `aside-late.h`. That number goes up only when a change could break
-existing patches. If it differs from your Aside Late, Mods warns and offers **Install anyway** or **Update anyway**, since compiling
-catches most mismatches.
+</details>
 
-Official patches update the same way, from this repo. If what you've compiled and what came with the exe differ, the higher version
-runs. **Use bundled version** goes back to the exe's copy. A patch that was compiled against another SDK turns off after you update
-Aside Late, and **Rebuild** compiles it again from the source it kept.
+<details>
+<summary><strong>What are the tradeoffs?</strong></summary>
 
-A patch includes `aside-late.h` and exports up to three functions:
+- Patches run inside the browser with no limits, like any code Aside runs. Install patches only from repos you trust.
+- The exe and its updates aren't signed. They're checked against the digest GitHub lists, so they're as trustworthy as this repo.
+- Aside Late's files are in your user folder, so other software running as you can change what the patched Aside loads.
 
-```c
-#include "aside-late.h"
+</details>
 
-// Off the UI thread, once. Finds what it needs in a clean copy of Aside.dll.
-PATCH_START() {
-    DWORD vtable = LookupClassVtable(lookup, "SomeView");
-    if (!vtable) return "SomeView";       // Refuses. The other patches are unaffected.
-    SomeView = (void **)(base + vtable);
-    return NULL;
-}
+<details>
+<summary><strong>How does it work?</strong></summary>
 
-// On the UI thread. Turns it on, including for what's already on screen.
-PATCH_ENABLE() {
-    HookVtable(SomeView, slot, OnPaint, (void **)&OriginalPaint);
-}
+Aside Late starts Aside and loads a small add-on into it as it starts. Each patch then finds what it needs in the Aside that's
+running, by what stays the same between builds, not by fixed offsets. [How it works →](docs/how-it-works.md)
 
-// On the UI thread, after its hooks and code edits have been taken off for it.
-PATCH_DISABLE() {
-}
-```
+</details>
 
-Patches run inside the browser with no limits. What the SDK adds:
+<details>
+<summary><strong>Does it run in the background?</strong></summary>
 
-| | |
-| --- | --- |
-| `HookVtable` | Replace a method on every object of a class, including ones that already exist |
-| `HookImport` | Replace what a module calls when it uses an import |
-| `EditCode` | Write over Aside's code, if it holds the bytes expected. Editing it back takes the edit away |
-| `FindObjects` | Find the live objects of a class, by looking for its vtable in the heap |
-| `RunOnUiThread` | Run something on the browser's UI thread |
-| `Lookup*` | Find classes, strings, functions, method slots and how views hide, by what stays the same |
-| `hold.h` | Keep a view hidden, remember what Aside asked for, and hand that back when turned off |
-| `LookupRemember` | Keep what a patch worked out about this build under a name, so another patch gets it with `LookupRecall` |
+No. It only does anything while the patched Aside is open.
 
-Hooks stack, so patches can share a method and come off in any order. Two patches can't edit
-the same bytes: the second one's edit is refused.
+</details>
 
-Prefer classes and methods to code patterns. They're what survives a rebuild of Aside.
+<details>
+<summary><strong>Why is Aside sometimes not patched?</strong></summary>
 
-### Options
+Patches load only when Aside starts through Aside Late: its shortcut, its pin or **Start Aside**. Aside started any other way,
+such as by opening a link while it's closed, is the normal browser. Aside restarting itself comes back patched.
 
-A patch that lists `options` in `patch.json` gets a configure button next to its switch, which
-opens a popup. Options that share a `group` go in an accordion, and `when` disables an option
-while a switch is off, or, written as `"key=value"`, while another option has any other value.
+</details>
 
-```json
-"options": [
-  { "group": "Look", "key": "look.show", "type": "switch", "title": "Show", "default": true },
-  { "group": "Look", "key": "look.side", "type": "select", "title": "Side", "when": "look.show", "default": "left",
-    "choices": [ { "value": "left", "title": "Left" }, { "value": "right", "title": "Right" } ] },
-  { "group": "Look", "key": "look.gap", "type": "slider", "title": "Gap", "when": "look.show", "default": 4, "min": 0, "max": 16, "unit": "px" }
-]
-```
+<details>
+<summary><strong>What if Aside keeps crashing?</strong></summary>
 
-Keys and values can use letters, digits and `-_.~`. Changes apply as they're made. The patch
-gets each value as text, before `PATCH_ENABLE` and again whenever one changes while it's on:
+A patch that crashes Aside, or crashes it right after being turned on, turns itself off, and **Mods** says why. If Aside crashes
+soon after starting with nothing to blame, the next start has the patches off, and **Mods** lets you turn them back on.
+`%LOCALAPPDATA%\AsideLate\mod.log` says what happened.
 
-```c
-PATCH_OPTION() {
-    if (!strcmp(key, "look.gap")) Gap = atoi(value);
-    // Redraw here if the patch is on.
-}
-```
+</details>
 
-Values that differ from the defaults are kept in `options\<id>.tsv` in the home folder. A patch
-with `"restart": true` gets changes the next time Aside starts, and its popup says so.
+<details>
+<summary><strong>Can I build it myself?</strong></summary>
 
-## How it works
+Yes. **Build from source** in the window compiles everything on your machine. It downloads a 69 MB compiler, checked against a
+pinned hash, and takes about a minute after that. To build from a clone instead, see [Build](docs/how-it-works.md#build).
 
-1. `aside-late.exe` starts `Aside.exe` as a debugger, waits for the moment `Aside.dll` is
-   mapped, has it load `aside-late-mod.dll`, and lets go.
-2. The mod finds the patches next to itself and in its home folder. For those switched on, it
-   loads the DLL, runs its start against a clean copy of `Aside.dll` read from disk, and enables it.
-3. After that, the settings page asks for changes through paths that don't exist on disk. One
-   worker thread does what takes time, and hands anything touching the browser to the UI thread.
+</details>
 
-### Installing
+## Uninstall
 
-The page reads a repo with GitHub's API. Install asks the mod to fetch `patches/<id>/` at that
-commit into `patches\<id>\source` in its home folder, and compile it against the headers in
-`build\sdk` and the mod's DLL. The compiler is [w64devkit](https://github.com/skeeto/w64devkit),
-downloaded into the home folder the first time one is needed. `ASIDE_LATE_GCC` points at another.
+To undo everything, quit Aside and start it normally. Closing its windows may not be enough, because Aside can keep running in
+the background.
 
-New source stays in `source.new` until it has compiled, so a failed update leaves what you had.
-An update loads the new DLL beside the old one, whose hooks are off. A loaded DLL can't safely be
-unloaded, because Aside could be running its code, so the old file goes on the next launch.
+To remove it, delete `%LOCALAPPDATA%\AsideLate`, and the **Aside (patched)** shortcuts and pins.
 
-### Crashes
+## Contributing
 
-The mod notes each risky moment in `session.txt`, and watches for faults with a patch on the stack.
-The next launch reads what's left behind:
-
-- **A fault in a patch** turns that patch off, and settings says why.
-- **A crash within 5 seconds of turning a patch on** does the same.
-- **A crash within 30 seconds of starting** with nothing to blame runs that one launch with no
-  patches. Force-quitting that soon looks the same, except through `aside-late.exe`, which knows.
-
-### settings
-
-Built into the mod, because it's how everything else is reached. Aside's settings are an
-extension page whose files its browser process reads, so:
-
-1. Watch `Aside.dll`'s imports of `CreateFileW`, `GetFileAttributes*` and
-   `GetFinalPathNameByHandleW`, and only act on paths inside the `AsideAgentManager`
-   extension. Aside asks an open file where it really is, so a redirected file answers with
-   the path it was opened as.
-2. Serve `main.html` from a copy with one extra `<script>` tag. The copy is made from
-   whatever that version of the extension ships.
-3. Serve `/aside-late/` from `web` in the home folder. Aside can have a file open at any
-   moment, and then it can't be replaced, so the files that change are written new each time
-   and `patches.json` leads to the newest.
-4. The script draws into the live page, copying a native navigation item and reusing the
-   page's CSS classes. It uses none of the page's code, so it needs no per-build names.
-5. The switch is Aside's own rebuilt: the same parts, classes, spring and glass as its component.
-   The glass picture comes from a native switch on the page, and without one a press looks plainer.
-   The popup, accordion and select are rebuilt the same way. Aside has no slider, so that one
-   takes its colors and thumb from the switch.
-
-## Limits
-
-This is later binding than offsets, not real name lookup like Dia's Objective-C hooks:
-
-- C++ keeps few names, and many classes are only reachable through code. A rebuild can change
-  that code's shape without the feature changing, and then a patch refuses until its rule is updated.
-- It runs on every launch, and opening Aside any other way gives you the normal browser. That
-  includes opening a link while it's closed. Aside restarting itself, after its own update or Aside Late's, goes through
-  Aside Late and comes back patched.
-- Patches found on startup add about 3 s to it. Turning one on later takes about the same, off
-  the UI thread, the first time.
-- Windows swallows an exception in a timer callback, and a `CHECK` in Aside is one. A patch that calls Aside
-  from its timer can fail there with nothing in `mod.log` and no crash.
+See [CONTRIBUTING.md](CONTRIBUTING.md). [Writing patches](docs/writing-patches.md) covers a patch's files, the SDK and options,
+and [How it works](docs/how-it-works.md) what runs where.
