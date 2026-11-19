@@ -6,12 +6,13 @@ Patches start off. Turn on the ones you want in Aside's **Settings → Patched s
 
 New in this alpha:
 
-- Fixed: logged out of X, the hand didn't find the Follow button. It does now, and X's cookie and log-in bars stay out of its way while it points, then come back.
-- **Add to desktop** and **Add to Start menu** make a shortcut that starts Aside patched, with no window of its own. Aside started that way shows on the taskbar as **Aside (patched)**, so a pin there starts it patched too.
-- Opened again once Aside is patched, the window offers **Patch again** and **Build from source** as well.
-- New patch, **Window glass**: the window turns frosted glass, blurring what's behind it, with a **Background opacity** slider like Windows Terminal's.
-- The Aside Late window itself is frosted glass now.
-- The first patched start opens a thank-you tab, once.
+- Works with Aside 1.0.1116.2. Every patch finds what it needs again.
+- Aside Late updates itself from now on. When a newer version is out, a card on a new tab and the top of **Mods** offer **Update**. It downloads in the background, is checked against the SHA-256 GitHub lists for it, and **Restart Aside** brings back your windows and tabs, patched by the new version. **Patched stuff → About → Updates** can make it download automatically or stop checking. This alpha is the first that can do this, so the next version is the first you'll be offered.
+- Aside restarting itself, after its own update or a restart, now comes back patched.
+- Some patches are split into smaller ones, so each does one thing. Your switches and options carry over:
+  - **Close the fullscreen gap** and **Square corners beside the sidebar** are out of **Window tweaks**.
+  - **Sidebar in fullscreen** is out of **Sidebar tweaks**.
+- **Made with aside-late** in **About** opens this repo.
 
 To undo everything, quit Aside and start it normally. To remove it, delete `%LOCALAPPDATA%\AsideLate`.
 
@@ -19,4 +20,4 @@ Known issues in this alpha:
 
 - Windows SmartScreen may warn you, because the exe isn't signed.
 - A Settings tab can close by itself shortly after opening. It's been seen most with Window tweaks collapsing the top bar, and the cause isn't known yet.
-- The fullscreen sidebar reveal in Sidebar tweaks has no backdrop.
+- Bookmark folder appearance changed the most for Aside 1.0.1116.2, and its right-click menu, colors and New folder haven't been tried by hand on that version yet.
