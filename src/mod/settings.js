@@ -607,10 +607,15 @@ function makeSelect(option, value, onChange) {
     popup = null;
     trigger.setAttribute("aria-expanded", "false");
     document.removeEventListener("pointerdown", outside, true);
+    document.removeEventListener("scroll", scrolled, true);
     if (refocus) trigger.focus();
   };
   const outside = event => {
     if (popup && !popup.contains(event.target) && !trigger.contains(event.target)) close(false);
+  };
+  // Outside a dialog the list sits on the page, and would stay put while the page scrolls under it.
+  const scrolled = event => {
+    if (popup && !popup.contains(event.target)) close(false);
   };
   const open = () => {
     const items = choices.map(choice => {
@@ -635,10 +640,11 @@ function makeSelect(option, value, onChange) {
     popup.dataset.slot = "select-content";
     popup.setAttribute("role", "listbox");
     popup.setAttribute("aria-label", option.title);
-    // In the popup rather than over it, so that the popup's keyboard handling still applies.
-    trigger.closest('[data-slot="dialog-content"]').append(popup);
+    // In the popup rather than over it, so that the popup's keyboard handling still applies. A select on a page goes on the page.
+    const dialog = trigger.closest('[data-slot="dialog-content"]');
+    (dialog ?? document.body).append(popup);
     const area = trigger.getBoundingClientRect();
-    const frame = popup.parentElement.getBoundingClientRect();
+    const frame = dialog ? dialog.getBoundingClientRect() : { left: 0, top: 0 };
     popup.style.minWidth = `${area.width}px`;
     // The popup moves its contents with a transform, which also makes it what "fixed" is relative to.
     const below = area.bottom + 4 + popup.offsetHeight <= window.innerHeight - 8;
@@ -646,6 +652,7 @@ function makeSelect(option, value, onChange) {
     popup.style.top = `${(below ? area.bottom + 4 : area.top - 4 - popup.offsetHeight) - frame.top}px`;
     trigger.setAttribute("aria-expanded", "true");
     document.addEventListener("pointerdown", outside, true);
+    if (!dialog) document.addEventListener("scroll", scrolled, true);
     (items[choices.findIndex(choice => choice.value === current)] ?? items[0])?.focus();
     popup.addEventListener("keydown", event => {
       const index = items.indexOf(document.activeElement);
