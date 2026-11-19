@@ -177,6 +177,7 @@ function icon(name, template) {
 
 // Aside's own icons, which are filled rather than drawn with a line.
 const GLYPHS = {
+  external: "M7 6a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v10a1 1 0 1 1-2 0V8.41l-9.29 9.3a1 1 0 0 1-1.42-1.42L15.59 7H8a1 1 0 0 1-1-1Z",
   configure: "M9 13C10.8645 13 12.4302 14.2744 12.874 16H20C20.5523 16 21 16.4477 21 17C21 17.5523 20.5523 18 20 18H12.874C12.4302 19.7256 10.8645 21 9 21C7.13554 21 5.56982 19.7256 5.12598 18H4C3.44772 18 3 17.5523 3 17C3 16.4477 3.44772 16 4 16H5.12598C5.56982 14.2744 7.13554 13 9 13ZM9 15C7.89478 15 7 15.8948 7 17C7 18.1052 7.89478 19 9 19C10.1052 19 11 18.1052 11 17C11 15.8948 10.1052 15 9 15ZM15 3C16.8645 3 18.4302 4.27443 18.874 6H20C20.5523 6 21 6.44772 21 7C21 7.55228 20.5523 8 20 8H18.874C18.4302 9.72557 16.8645 11 15 11C13.1355 11 11.5698 9.72557 11.126 8H4C3.44772 8 3 7.55228 3 7C3 6.44772 3.44772 6 4 6H11.126C11.5698 4.27443 13.1355 3 15 3ZM15 5C13.8948 5 13 5.89478 13 7C13 8.10522 13.8948 9 15 9C16.1052 9 17 8.10522 17 7C17 5.89478 16.1052 5 15 5Z",
   chevron: "M17.2929 8.79289C17.6834 8.40237 18.3164 8.40237 18.707 8.79289C19.0975 9.18342 19.0975 9.81643 18.707 10.207L12.707 16.207C12.3164 16.5975 11.6834 16.5975 11.2929 16.207L5.29289 10.207C4.90237 9.81643 4.90237 9.18342 5.29289 8.79289C5.68342 8.40237 6.31643 8.40237 6.70696 8.79289L11.9999 14.0859L17.2929 8.79289Z",
   check: "M18.0663 6.16872C18.5254 5.65338 19.3154 5.60731 19.8309 6.06618C20.3463 6.52529 20.3923 7.31536 19.9335 7.83083L10.1337 18.8308C9.90611 19.0862 9.58295 19.2374 9.24108 19.2488C8.89935 19.2601 8.56803 19.131 8.32408 18.8914L4.12389 14.7664C3.6315 14.2826 3.62457 13.4913 4.10826 12.9988C4.59201 12.5064 5.38336 12.4995 5.87584 12.9832L9.13951 16.1882L18.0663 6.16872Z",
@@ -203,6 +204,16 @@ function row(title, description, control) {
       make("h4", "text-primary text-sm font-medium", title),
       description ? make("p", "text-muted-foreground text-xs font-medium", description) : null),
     control ? make("div", "flex min-w-0 shrink-0 justify-end", control) : null);
+}
+
+// A row that opens a page in a new tab, with the arrow Aside's own outside links have.
+function linkRow(title, description, href) {
+  const link = make("a", "group block transition-colors hover:brightness-110 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+    row(title, description, glyph("external", "text-muted-foreground group-hover:text-primary size-4 transition-colors")));
+  link.href = href;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  return link;
 }
 
 function section(title, ...children) {
@@ -1058,7 +1069,7 @@ function aboutPage() {
           if (mode === "auto" && found && lateState.state === "idle") download(found);
         });
       })),
-      row("Made with aside-late", "These community mods are independent of Aside.")),
+      linkRow("Made with aside-late", "These community mods are independent of Aside.", `https://github.com/${OFFICIAL_REPO}`)),
   ];
 }
 
