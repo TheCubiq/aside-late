@@ -9,11 +9,6 @@
 #define COMPILER_URL "https://github.com/skeeto/w64devkit/releases/download/v" COMPILER_VERSION "/w64devkit-x64-" COMPILER_VERSION ".7z.exe"
 #define MAX_SOURCES 256
 
-typedef struct {
-    char *data;
-    size_t size;
-} Download;
-
 // A trial can stand in for GitHub. These are also what the settings page uses.
 static void ApiBase(char *out, size_t size) {
     if (!GetEnvironmentVariableA("ASIDE_LATE_GITHUB_API", out, (DWORD)size)) snprintf(out, size, "https://api.github.com");
@@ -23,8 +18,9 @@ static void RawBase(char *out, size_t size) {
     if (!GetEnvironmentVariableA("ASIDE_LATE_GITHUB_RAW", out, (DWORD)size)) snprintf(out, size, "https://raw.githubusercontent.com");
 }
 
-// Follows redirects, and hands the body to a file or to memory.
-static BOOL HttpGet(const char *url, const wchar_t *toFile, Download *toMemory, char *error, size_t errorSize) {
+// Follows redirects, and hands the body to a file or to memory. progress hears how far it's got, out of the size the server
+// gave, or 0 when it gave none.
+BOOL HttpFetch(const char *url, const wchar_t *toFile, Download *toMemory, HttpProgress progress, void *context, char *error, size_t errorSize) {
     wchar_t wide[2048], host[256], path[2048];
     swprintf(wide, 2048, L"%hs", url);
     URL_COMPONENTSW parts = {.dwStructSize = sizeof parts, .lpszHostName = host, .dwHostNameLength = 256, .lpszUrlPath = path, .dwUrlPathLength = 2048};
@@ -52,6 +48,9 @@ static BOOL HttpGet(const char *url, const wchar_t *toFile, Download *toMemory, 
         goto out;
     }
     if (toMemory) *toMemory = (Download){0};
+    DWORD total = 0, totalSize = sizeof total;
+    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER, NULL, &total, &totalSize, NULL)) total = 0;
+    ULONGLONG received = 0;
     for (;;) {
         char buffer[65536];
         DWORD got = 0;
@@ -60,6 +59,8 @@ static BOOL HttpGet(const char *url, const wchar_t *toFile, Download *toMemory, 
             goto out;
         }
         if (!got) break;
+        received += got;
+        if (progress) progress(context, received, total);
         if (file && fwrite(buffer, 1, got, file) != got) {
             snprintf(error, errorSize, "Couldn't write the download");
             goto out;
@@ -80,6 +81,10 @@ out:
     if (connection) WinHttpCloseHandle(connection);
     if (session) WinHttpCloseHandle(session);
     return done;
+}
+
+static BOOL HttpGet(const char *url, const wchar_t *toFile, Download *toMemory, char *error, size_t errorSize) {
+    return HttpFetch(url, toFile, toMemory, NULL, NULL, error, errorSize);
 }
 
 // Runs something with no window, waits, and leaves what it printed in a file.

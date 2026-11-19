@@ -35,6 +35,7 @@ const MAX_JOBS: usize = 6;
 const BUNDLE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bundle.bin"));
 const SOURCE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/source.bin"));
 const SOURCE_ID: &str = env!("ASIDE_LATE_SOURCE_ID");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Stage {
@@ -189,6 +190,8 @@ fn unpack_bundle(paths: &Paths, status: &Shared, cancel: &AtomicBool) -> Result<
         let _ = fs::remove_dir_all(&part);
         return Err(CANCELLED.into());
     }
+    // The mod reads this to know which version it is, and whether GitHub has a newer one.
+    fs::write(part.join("version.txt"), VERSION).map_err(describe)?;
     fs::write(part.join("ready"), SOURCE_ID).map_err(describe)?;
     // Antivirus can hold new files for a moment while it looks at them.
     let mut moved = fs::rename(&part, &app);
@@ -433,7 +436,7 @@ fn build(paths: &Paths, status: &Shared, cancel: &AtomicBool, from: f32, span: f
     core.extend(args(["-DASIDE_LATE_MOD", "-Isrc/mod", "-shared", "-o"]));
     core.push(mod_dll.clone().into());
     core.extend(c_files.drain(..).map(OsString::from));
-    core.extend(args(["-lwinhttp", "-lole32"]));
+    core.extend(args(["-lwinhttp", "-lole32", "-lbcrypt"]));
 
     let mut patches = Vec::new();
     let patches_root = source.join("patches");
@@ -502,6 +505,7 @@ fn build(paths: &Paths, status: &Shared, cancel: &AtomicBool, from: f32, span: f
     if cancel.load(Ordering::Relaxed) {
         return Err(CANCELLED.into());
     }
+    fs::write(app.join("version.txt"), VERSION).map_err(describe)?;
     fs::write(app.join("ready"), SOURCE_ID).map_err(describe)?;
     let _ = fs::remove_dir_all(&source);
     remove_old_builds(paths);
@@ -639,8 +643,66 @@ fn keep_a_copy(paths: &Paths) -> io::Result<PathBuf> {
     if !current.as_os_str().eq_ignore_ascii_case(kept.as_os_str()) {
         fs::create_dir_all(&paths.home)?;
         fs::copy(&current, &kept)?;
+        fs::write(paths.home.join("Aside Late.version"), VERSION)?;
     }
     Ok(kept)
+}
+
+/// The kept copy, when an update has made it newer than this one. An older copy, such as one left in Downloads, hands over to it
+/// rather than putting older patches back.
+pub fn newer_kept_copy() -> Option<PathBuf> {
+    let home = env_path("ASIDE_LATE_HOME").or_else(|| env_path("LOCALAPPDATA").map(|local| local.join("AsideLate")))?;
+    let kept = home.join("Aside Late.exe");
+    let version = fs::read_to_string(home.join("Aside Late.version")).ok()?;
+    let current = std::env::current_exe().ok()?;
+    if current.as_os_str().eq_ignore_ascii_case(kept.as_os_str()) || !kept.exists() || !is_newer(version.trim(), VERSION) {
+        return None;
+    }
+    Some(kept)
+}
+
+/// Like semver: 1.10.0 is newer than 1.9.0, and 0.2.0 is newer than 0.2.0-alpha.3.
+pub fn is_newer(version: &str, than: &str) -> bool {
+    fn parts(version: &str) -> (Vec<u64>, Option<Vec<String>>) {
+        let (core, pre) = version.split_once('-').map_or((version, None), |(core, pre)| (core, Some(pre)));
+        (core.split('.').map(|part| part.parse().unwrap_or(0)).collect(), pre.map(|pre| pre.split('.').map(str::to_owned).collect()))
+    }
+    let ((left, left_pre), (right, right_pre)) = (parts(version), parts(than));
+    for i in 0..3 {
+        let (a, b) = (left.get(i).copied().unwrap_or(0), right.get(i).copied().unwrap_or(0));
+        if a != b {
+            return a > b;
+        }
+    }
+    match (left_pre, right_pre) {
+        (None, Some(_)) => true,
+        (Some(left), Some(right)) => {
+            for (a, b) in left.iter().zip(&right) {
+                let ordering = match (a.parse::<u64>(), b.parse::<u64>()) {
+                    (Ok(a), Ok(b)) => a.cmp(&b),
+                    (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+                    (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+                    (Err(_), Err(_)) => a.cmp(b),
+                };
+                if ordering.is_ne() {
+                    return ordering.is_gt();
+                }
+            }
+            left.len() > right.len()
+        }
+        _ => false,
+    }
+}
+
+/// Waits for an Aside that's restarting to be gone, so the one started next isn't handed over to it.
+pub fn wait_for_exit(process: u32) {
+    unsafe {
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, process);
+        if !handle.is_null() {
+            WaitForSingleObject(handle, 60_000);
+            CloseHandle(handle);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

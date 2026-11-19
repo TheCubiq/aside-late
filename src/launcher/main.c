@@ -130,6 +130,14 @@ int wmain(int argc, wchar_t **argv) {
             wcsncat(skipped, argv[first + 1], 1022 - wcslen(skipped));
             wcscat(skipped, L",");
             first += 2;
+        } else if (!wcscmp(argv[first], L"--after") && first + 1 < argc) {
+            // Aside starting itself again, which the mod sends here. That Aside has to be gone first.
+            HANDLE before = OpenProcess(SYNCHRONIZE, FALSE, wcstoul(argv[first + 1], NULL, 10));
+            if (before) {
+                WaitForSingleObject(before, 60000);
+                CloseHandle(before);
+            }
+            first += 2;
         } else if (!wcscmp(argv[first], L"--exe") && first + 1 < argc) {
             wcsncpy(exe, argv[first + 1], MAX_PATH - 1);
             exe[MAX_PATH - 1] = 0;

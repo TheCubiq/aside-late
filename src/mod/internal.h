@@ -49,12 +49,25 @@ BOOL AddInstalledPatch(const char *id);
 void SetPatchProgress(const char *id, const char *text);
 
 // install.c
+typedef struct {
+    char *data;
+    size_t size;
+} Download;
+typedef void (*HttpProgress)(void *context, ULONGLONG received, ULONGLONG total);
+BOOL HttpFetch(const char *url, const wchar_t *toFile, Download *toMemory, HttpProgress progress, void *context, char *error, size_t errorSize);
 BOOL InstallPatch(const char *repo, const char *id, const char *sha, BOOL rebuild, char *error, size_t errorSize);
 BOOL HasCompiler(void);
 void CleanOldBuilds(const char *id, const char *keepSha);
 
 // settings.c
 void SettingsStart(BYTE *base);
+
+// update.c
+void UpdateStart(BYTE *base);
+// Fetches that release of Aside Late in the background, for update.json to follow.
+void UpdateDownload(const char *version, const char *sha256);
+// Aside's own restart, which brings back the windows and tabs. Aside starting itself again goes through Aside Late.
+void UpdateRestart(void);
 
 // taskbar.c
 void TaskbarStart(void);

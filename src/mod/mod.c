@@ -136,6 +136,7 @@ static void Start(void) {
     HooksInit();
     PublishStart();
     SettingsStart(base);
+    UpdateStart(base);
     PatchesStart(base);
     TaskbarStart();
     // Says this Aside has the mod, for as long as it runs, so a shortcut can open a window in it instead of asking to close it.
