@@ -41,7 +41,8 @@ When a newer Aside Late is out, a card in the corner of a new tab says so, and s
 the release's exe in the background and checks it against the SHA-256 GitHub lists for it. It then replaces
 `%LOCALAPPDATA%\AsideLate\Aside Late.exe`, which shortcuts and pins start. **Restart Aside** restarts it the way Aside's own
 restart does, so windows and tabs come back, patched by the new version. Otherwise it's used the next time Aside starts from a
-shortcut or pin. **Later** hides the card for that version. GitHub is asked at most every 6 hours. Prereleases are only offered
+shortcut or pin. **Later** hides the card for that version. **Patched stuff → About → Updates** can instead download them automatically, with no
+card, leaving **Restart Aside** in Mods, or stop looking. GitHub is asked at most every 6 hours. Prereleases are only offered
 to someone already on one.
 
 An older copy of the exe, such as one left in Downloads, hands over to the newer kept copy instead of putting older patches back.
