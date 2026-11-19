@@ -582,9 +582,33 @@ fn launch_without_a_window(arguments: &[OsString]) -> bool {
     }
 }
 
+/// Aside restarting, once Aside Late has updated. The mod sends Aside's own relaunch here, with the process to wait for.
+fn relaunch(arguments: &[OsString]) -> bool {
+    let Ok(paths) = engine::find_paths(arguments.to_vec()) else { return false };
+    if engine::prepare(&paths, false, &engine::new_status(), &AtomicBool::new(false)).is_err() {
+        return false;
+    }
+    // Started from a pin, Aside keeps its app ID, and so does what it starts.
+    engine::start(&paths, std::env::var_os("ASIDE_LATE_APP_ID").is_some()).is_ok()
+}
+
 fn main() {
     let mut arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let launch = arguments.iter().position(|argument| argument == "--launch").map(|at| arguments.remove(at)).is_some();
+    if let Some(kept) = engine::newer_kept_copy() {
+        if std::process::Command::new(kept).args(&arguments).spawn().is_ok() {
+            return;
+        }
+    }
+    let mut launch = arguments.iter().position(|argument| argument == "--launch").map(|at| arguments.remove(at)).is_some();
+    if let Some(at) = arguments.iter().position(|argument| argument == "--relaunch") {
+        arguments.remove(at);
+        let process = if at < arguments.len() { arguments.remove(at) } else { OsString::new() };
+        engine::wait_for_exit(process.to_str().and_then(|text| text.parse().ok()).unwrap_or(0));
+        if relaunch(&arguments) {
+            return;
+        }
+        launch = true;
+    }
     if launch && launch_without_a_window(&arguments) {
         return;
     }
